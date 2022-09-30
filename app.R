@@ -1,0 +1,167 @@
+library(shiny)
+library(readxl)
+library(stringr)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(plotly)
+library(protti)
+library(formattable)
+
+# Define UI for application that draws a histogram
+ui <- fluidPage(
+
+    # Application title
+    titlePanel("ICP-MS Calibration Curve explorer"),
+    
+    # Sidebar
+    sidebarLayout(
+        sidebarPanel(
+          fileInput("raw_data",
+                    "ICP-MS raw data"),
+          selectizeInput("metal_mode", "Select a metal mode", choices = NULL),
+          htmlOutput("fit")
+        ),
+
+        # Show a plot
+        mainPanel(
+          width = 7,
+           plotlyOutput("curve_plot"),
+           formattableOutput("curve_table")
+        )
+    )
+)
+
+# Define server logic required to draw a histogram
+server <- function(input, output, session) {
+  read_input <- reactive({
+    if(is.null(input$raw_data)){
+      return(NULL)
+    } else {
+      # Read data
+      raw_data <- read_excel(input$raw_data$datapath)[-1,]
+      
+      col_names <- colnames(raw_data)
+      
+      col_names[1] <- "sample_type"
+      col_names[2] <- "sample_name"
+      
+      for(i in 1:length(col_names)){
+        if(i > 2){
+          if(i%%3 == 0){
+            metal_mode <- col_names[i]
+            col_names[i] <- paste(metal_mode, "concentration_ppb")
+          }
+          if(i%%3 == 1){
+            col_names[i] <- paste(metal_mode, "cps")
+          }
+          if(i%%3 == 2){
+            col_names[i] <- paste(metal_mode, "rsd")
+          }
+          
+        }
+      }
+      
+      colnames(raw_data) <- col_names
+      
+      data <- raw_data |>
+        filter(sample_type %in% c("CalBlk", "CalStd")) |>
+        select(-sample_type) |>
+        pivot_longer(cols = -sample_name,
+                     names_to = "metal_mode",
+                     values_to = "value") |> 
+        mutate(value = as.numeric(value)) |>  
+        mutate(type = str_extract(metal_mode, pattern = "concentration_ppb|cps|rsd")) |> 
+        mutate(metal_mode = str_replace(metal_mode, pattern = "concentration_ppb|cps|rsd", replacement = "")) |> 
+        pivot_wider(names_from = type, values_from = value) |> 
+        mutate(expected_ppb = as.numeric(str_extract(sample_name, pattern = "\\d+(?= ppb)"))) 
+      
+        data <- split(data, data$metal_mode) |>
+        map_dfr(.f = ~ {
+          .x |> 
+            mutate(fit = summary(lm(concentration_ppb ~ expected_ppb, data = .))$r.squared)
+        }) 
+      
+      data
+    }
+  })
+  
+  select_metal_mode <- reactive({
+    if(is.null(read_input())){
+      return(NULL)
+    } else {
+      modes <- unique(read_input()$metal_mode)
+    }
+  })
+  observe({
+    updateSelectizeInput(session, "metal_mode", choices = select_metal_mode(), server = TRUE)
+  })
+  
+  output$fit <- renderText({
+    if(is.null(read_input())){
+       return(paste("<b>R<sup>2</sup>:", 0, "</b>"))
+    } else {
+      r2 <- read_input() |> 
+        filter(metal_mode == input$metal_mode) |> 
+        pull(fit) |> 
+        unique()
+      
+      paste("<b>R<sup>2</sup>:", r2, "</b>")
+    }
+  })
+  
+  # Make plot
+  output$curve_plot <- renderPlotly({
+    if(is.null(select_metal_mode())){
+      return(NULL)
+    } else {
+      plot <- read_input() |> 
+        filter(metal_mode == input$metal_mode) |> 
+        ggplot(aes(x = expected_ppb, y = concentration_ppb))+
+        geom_point(size = 2)+
+        geom_smooth(formula = y ~ x,
+                    method = "lm", size = 1, col = protti_colours[1])+
+        labs(title = input$metal_mode, x = "Expected Concentration [ppb]", y = "Measured Concentration [ppb]")+
+        theme_bw() +
+        theme(plot.title = ggplot2::element_text(size = 20),
+              axis.title.x = ggplot2::element_text(size = 15),
+              axis.text.y = ggplot2::element_text(size = 15),
+              axis.text.x = ggplot2::element_text(size = 12),
+              axis.title.y = ggplot2::element_text(size = 15),
+              legend.title = ggplot2::element_text(size = 15),
+              legend.text = ggplot2::element_text(size = 15),
+              strip.text.x = ggplot2::element_text(size = 15),
+              strip.text = ggplot2::element_text(size = 15),
+              strip.background = element_blank()
+        )
+
+      ggplotly(plot)
+    }
+  })
+  
+  # Make table
+  output$curve_table <- renderFormattable({
+    if(is.null(select_metal_mode())){
+      return(NULL)
+    } else {
+      read_input() |>
+        filter(metal_mode == input$metal_mode) |> 
+        select(expected_ppb, concentration_ppb, cps, rsd) |> 
+        formattable(list(
+          cps = formatter("span", style = x ~ ifelse(x > 100000000 | x < 1000,
+                                                       style(color = "red", font.weight = "bold"), NA)),
+          rsd = formatter("span", style = x ~ case_when(x > 5 ~ style(color = "red", font.weight = "bold"),
+                                                        x < 1 ~ style(color = "green", font.weight = "bold"),
+                                                        x <= 5 ~ style(color = "#c4e84d", font.weight = "bold"))),
+          concentration_ppb = formatter("span", style = ~ case_when(
+            is.na(concentration_ppb) | ((expected_ppb / 10) < abs(expected_ppb - concentration_ppb)) ~ style(color = "red", font.weight = "bold"),
+            ((expected_ppb / 15) < abs(expected_ppb - concentration_ppb)) ~ style(color = "#e38c29", font.weight = "bold")
+                                                                    ))
+        ))
+    }
+  })
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
