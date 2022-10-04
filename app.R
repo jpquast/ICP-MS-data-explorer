@@ -151,9 +151,9 @@ server <- function(input, output, session) {
         formattable(list(
           cps = formatter("span", style = x ~ ifelse(x > 100000000 | x < 1000,
                                                        style(color = "red", font.weight = "bold"), NA)),
-          rsd = formatter("span", style = x ~ case_when(x > 5 ~ style(color = "red", font.weight = "bold"),
-                                                        x < 1 ~ style(color = "green", font.weight = "bold"),
-                                                        x <= 5 ~ style(color = "#c4e84d", font.weight = "bold"))),
+          rsd = formatter("span", style = x ~ case_when(x > 2 ~ style(color = "red", font.weight = "bold"),
+                                                        x <= 1 ~ style(color = "green", font.weight = "bold"),
+                                                        x <= 2 ~ style(color = "#c4e84d", font.weight = "bold"))),
           concentration_ppb = formatter("span", style = ~ case_when(
             is.na(concentration_ppb) | ((expected_ppb / 10) < abs(expected_ppb - concentration_ppb)) ~ style(color = "red", font.weight = "bold"),
             ((expected_ppb / 15) < abs(expected_ppb - concentration_ppb)) ~ style(color = "#e38c29", font.weight = "bold")
