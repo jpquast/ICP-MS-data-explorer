@@ -8,6 +8,7 @@ library(ggplot2)
 library(plotly)
 library(protti)
 library(formattable)
+library(forcats)
 
 # Define UI for application that draws a histogram
 ui <- fluidPage(
@@ -27,8 +28,16 @@ ui <- fluidPage(
         # Show a plot
         mainPanel(
           width = 7,
+          tabsetPanel(
+            tabPanel("Explore metal modes", 
            plotlyOutput("curve_plot"),
            formattableOutput("curve_table")
+            ),
+           tabPanel("Experiment overview",
+                    plotlyOutput("error_plot"),
+                    plotlyOutput("fit_plot")
+           )
+          )
         )
     )
 )
@@ -111,7 +120,7 @@ server <- function(input, output, session) {
     }
   })
   
-  # Make plot
+  # Make cuve plot
   output$curve_plot <- renderPlotly({
     if(is.null(select_metal_mode())){
       return(NULL)
@@ -140,23 +149,92 @@ server <- function(input, output, session) {
     }
   })
   
+  # Make error plot
+  output$error_plot <- renderPlotly({
+    if(is.null(read_input())){
+      return(NULL)
+    } else {
+      plot <- read_input() |> 
+        mutate(error = abs(expected_ppb - concentration_ppb)) %>% 
+        mutate(expected_ppb = forcats::fct_reorder(as.character(expected_ppb),expected_ppb)) %>% 
+        ggplot(aes(expected_ppb, error))+
+        geom_boxplot()+
+        labs(title = "Error distribution", x = "Expected Concentration [ppb]", y = "Measurment error [ppb]")+
+        theme_bw() +
+        theme(plot.title = ggplot2::element_text(size = 20),
+              axis.title.x = ggplot2::element_text(size = 15),
+              axis.text.y = ggplot2::element_text(size = 15),
+              axis.text.x = ggplot2::element_text(size = 12),
+              axis.title.y = ggplot2::element_text(size = 15),
+              legend.title = ggplot2::element_text(size = 15),
+              legend.text = ggplot2::element_text(size = 15),
+              strip.text.x = ggplot2::element_text(size = 15),
+              strip.text = ggplot2::element_text(size = 15),
+              strip.background = element_blank()
+        )
+      
+      ggplotly(plot)
+    }
+  })
+  
+  # Make r square plot
+  output$fit_plot <- renderPlotly({
+    if(is.null(read_input())){
+      return(NULL)
+    } else {
+      plot <- read_input() |> 
+        distinct(fit) %>% 
+        ggplot(aes(x = "All curve fits", y = fit))+
+        geom_boxplot()+
+        labs(title = "R<sup>2</sup> Distribution", x = "", y = "R<sup>2</sup>")+
+        theme_bw() +
+        theme(plot.title = ggplot2::element_text(size = 20),
+              axis.title.x = ggplot2::element_text(size = 15),
+              axis.text.y = ggplot2::element_text(size = 15),
+              axis.text.x = ggplot2::element_text(size = 12),
+              axis.title.y = ggplot2::element_text(size = 15),
+              legend.title = ggplot2::element_text(size = 15),
+              legend.text = ggplot2::element_text(size = 15),
+              strip.text.x = ggplot2::element_text(size = 15),
+              strip.text = ggplot2::element_text(size = 15),
+              strip.background = element_blank()
+        )
+      
+      ggplotly(plot) %>% 
+        layout(yaxis = list(hoverformat = '.6f'))
+    }
+  })
+  
   # Make table
   output$curve_table <- renderFormattable({
     if(is.null(select_metal_mode())){
       return(NULL)
     } else {
       read_input() |>
+        mutate(error = abs(expected_ppb - concentration_ppb)) %>% 
+        group_by(expected_ppb) %>% 
+        mutate(quant50 = quantile(error, na.rm = TRUE, probs = c(0.5)),
+               quant75 = quantile(error, na.rm = TRUE, probs = c(0.75)),
+               quant90 = quantile(error, na.rm = TRUE, probs = c(0.9))) %>% 
+        ungroup() %>% 
+        mutate(quality = case_when(error <= quant50 ~ "good",
+                                   error <= quant75 ~ "okay",
+                                   error <= quant90 ~ "not good",
+                                   TRUE ~ "bad")) %>% 
         filter(metal_mode == input$metal_mode) |> 
-        select(expected_ppb, concentration_ppb, cps, rsd) |> 
+        select(expected_ppb, concentration_ppb, cps, rsd, quality) |> 
         formattable(list(
+          quality = FALSE,
           cps = formatter("span", style = x ~ ifelse(x > 100000000 | x < 1000,
                                                        style(color = "red", font.weight = "bold"), NA)),
           rsd = formatter("span", style = x ~ case_when(x > 2 ~ style(color = "red", font.weight = "bold"),
                                                         x <= 1 ~ style(color = "green", font.weight = "bold"),
                                                         x <= 2 ~ style(color = "#c4e84d", font.weight = "bold"))),
           concentration_ppb = formatter("span", style = ~ case_when(
-            is.na(concentration_ppb) | ((expected_ppb / 10) < abs(expected_ppb - concentration_ppb)) ~ style(color = "red", font.weight = "bold"),
-            ((expected_ppb / 15) < abs(expected_ppb - concentration_ppb)) ~ style(color = "#e38c29", font.weight = "bold")
+            quality == "bad" ~ style(color = "red", font.weight = "bold"),
+            quality == "not good" ~ style(color = "#e38c29", font.weight = "bold"),
+            quality == "okay" ~ style(color = "#c4e84d", font.weight = "bold"),
+            quality == "good" ~ style(color = "green", font.weight = "bold")
                                                                     ))
         ))
     }
