@@ -12,34 +12,43 @@ library(forcats)
 
 # Define UI for application that draws a histogram
 ui <- fluidPage(
-
-    # Application title
-    titlePanel("ICP-MS Calibration Curve explorer"),
-    
-    # Sidebar
-    sidebarLayout(
-        sidebarPanel(
-          fileInput("raw_data",
-                    "ICP-MS raw data"),
-          selectizeInput("metal_mode", "Select a metal mode", choices = NULL),
-          htmlOutput("fit")
-        ),
-
-        # Show a plot
-        mainPanel(
-          width = 7,
-          tabsetPanel(
-            tabPanel("Explore metal modes", 
-           plotlyOutput("curve_plot"),
-           formattableOutput("curve_table")
-            ),
-           tabPanel("Experiment overview",
-                    plotlyOutput("error_plot"),
-                    plotlyOutput("fit_plot")
-           )
-          )
-        )
-    )
+  navbarPage("ICP-MS Calibration Curve explorer",
+             tabPanel("Experiment overview",
+                      sidebarPanel(
+                        fileInput("raw_data",
+                                  "ICP-MS raw data")
+                      ),
+                      mainPanel(
+                        width = 7,
+                        plotlyOutput("error_plot"),
+                        br(),
+                        plotlyOutput("fit_plot")
+                      )
+             ),
+             tabPanel(
+               "Explore metal modes",
+               sidebarPanel(
+                 selectizeInput("metal_mode", "Select a metal mode", choices = NULL),
+                 htmlOutput("fit"), # include in plot if possible
+               ),
+               mainPanel(
+                 width = 7,
+                 plotlyOutput("curve_plot"),
+                 br(),
+                 formattableOutput("curve_table")
+               )
+             ),
+             tabPanel(
+               "Metal mode quality",
+               sidebarPanel(
+                 selectizeInput("metal", "Select a metal", choices = NULL)
+               ),
+               mainPanel(
+                 width = 7
+                 
+               )
+             )
+  )
 )
 
 # Define server logic required to draw a histogram
@@ -90,21 +99,77 @@ server <- function(input, output, session) {
         map_dfr(.f = ~ {
           .x |> 
             mutate(fit = summary(lm(concentration_ppb ~ expected_ppb, data = .))$r.squared)
-        }) 
+        }) %>% 
+        mutate(metal = str_extract(metal_mode, pattern = "(?<=\\d  )[:alpha:]+"))
       
       data
     }
   })
   
+  assess_calibration_quality <- reactive({
+    if(is.null(read_input())){
+      return(NULL)
+    } else {
+    data_quality <- read_input() %>% 
+      select(-sample_name) %>% 
+      filter(expected_ppb != 0) %>% 
+      mutate(error = abs(expected_ppb - concentration_ppb)) %>% 
+      group_by(expected_ppb) %>% 
+      mutate(quant50 = quantile(error, na.rm = TRUE, probs = c(0.5)),
+             quant75 = quantile(error, na.rm = TRUE, probs = c(0.75)),
+             quant90 = quantile(error, na.rm = TRUE, probs = c(0.9))) %>% 
+      ungroup() %>% 
+      mutate(quality_ppb = case_when(error <= quant50 ~ 2,
+                                     error <= quant75 ~ 1,
+                                     error <= quant90 ~ -1,
+                                     TRUE ~ -2)) %>% 
+      select(-c(quant50, quant75, quant90)) %>% 
+      mutate(quant50 = quantile(unique(fit), na.rm = TRUE, probs = c(0.5)),
+             quant25 = quantile(unique(fit), na.rm = TRUE, probs = c(0.25)),
+             quant10 = quantile(unique(fit), na.rm = TRUE, probs = c(0.1))) %>% 
+      mutate(quality_fit = case_when(fit >= quant50 ~ 10,
+                                     fit >= quant25 ~ 5,
+                                     fit >= quant10 ~ -5,
+                                     TRUE ~ -10)) %>% 
+      select(-c(quant50, quant25, quant10)) %>% 
+      mutate(quality_cps = ifelse(cps < 1000 | cps > 100000000 | is.na(cps), -2, 2)) %>% 
+      mutate(quality_rsd = case_when(rsd <= 1 ~ 2,
+                                     rsd <= 2 ~ 1,
+                                     TRUE ~ -2)) %>% 
+      group_by(metal_mode) %>% 
+      mutate(quality = sum(quality_ppb, quality_rsd, quality_cps, unique(quality_fit))) %>% 
+      ungroup() %>% 
+      select(-c(concentration_ppb, cps, rsd, fit, error))
+    
+    data_quality
+    }
+  })
+  
+  # select metal mode
   select_metal_mode <- reactive({
     if(is.null(read_input())){
       return(NULL)
     } else {
-      modes <- unique(read_input()$metal_mode)
+      distinct_data <- read_input() %>% 
+        distinct(metal_mode, metal)
+      
+      modes <- split(distinct_data$metal_mode, distinct_data$metal)
     }
   })
   observe({
     updateSelectizeInput(session, "metal_mode", choices = select_metal_mode(), server = TRUE)
+  })
+  
+  # select metal
+  select_metal <- reactive({
+    if(is.null(assess_calibration_quality())){
+      return(NULL)
+    } else {
+      metals <- unique(assess_calibration_quality()$metal)
+    }
+  })
+  observe({
+    updateSelectizeInput(session, "metal", choices = select_metal(), server = TRUE)
   })
   
   output$fit <- renderText({
@@ -225,7 +290,7 @@ server <- function(input, output, session) {
         select(expected_ppb, concentration_ppb, cps, rsd, quality) |> 
         formattable(list(
           quality = FALSE,
-          cps = formatter("span", style = x ~ ifelse(x > 100000000 | x < 1000,
+          cps = formatter("span", style = x ~ ifelse(x > 100000000 | x < 1000 | is.na(x),
                                                        style(color = "red", font.weight = "bold"), NA)),
           rsd = formatter("span", style = x ~ case_when(x > 2 ~ style(color = "red", font.weight = "bold"),
                                                         x <= 1 ~ style(color = "green", font.weight = "bold"),
