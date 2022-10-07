@@ -13,7 +13,7 @@ library(forcats)
 # Define UI for application that draws a histogram
 ui <- fluidPage(
   navbarPage("ICP-MS Calibration Curve explorer",
-             tabPanel("Experiment overview",
+             tabPanel("Calibration overview",
                       sidebarPanel(
                         fileInput("raw_data",
                                   "ICP-MS raw data")
@@ -28,8 +28,7 @@ ui <- fluidPage(
              tabPanel(
                "Explore metal modes",
                sidebarPanel(
-                 selectizeInput("metal_mode", "Select a metal mode", choices = NULL),
-                 htmlOutput("fit"), # include in plot if possible
+                 selectizeInput("metal_mode", "Select a metal mode", choices = NULL)
                ),
                mainPanel(
                  width = 7,
@@ -41,13 +40,45 @@ ui <- fluidPage(
              tabPanel(
                "Metal mode quality",
                sidebarPanel(
-                 selectizeInput("metal", "Select a metal", choices = NULL)
+                 selectizeInput("metal", "Select a metal", choices = NULL),
+                 selectizeInput("best_metal_mode", "Select the best metal modes for analysis", choices = NULL, multiple = TRUE),
+                 br(),
+                 h2("Advanced settings"),
+                 h4("ppb quality"),
+                 sliderInput("ppb_quantile_low", 'Quantile for "good" (below) ppb quality', min = 0, max = 1, value = 0.5, step = 0.05),
+                 sliderInput("ppb_quantile_mid", 'Quantile for "okay" (below) ppb quality', min = 0, max = 1, value = 0.75, step = 0.05),
+                 sliderInput("ppb_quantile_high", 'Quantile for "not good" (below) and "bad" (above) ppb quality', min = 0, max = 1, value = 0.9, step = 0.05),
+                 br(),
+                 h4("fit quality"),
+                 sliderInput("fit_quantile_high", 'Quantile for "good" (above) fit quality', min = 0, max = 1, value = 0.5, step = 0.05),
+                 sliderInput("fit_quantile_mid", 'Quantile for "okay" (above) fit quality', min = 0, max = 1, value = 0.25, step = 0.05),
+                 sliderInput("fit_quantile_low", 'Quantile for "not good" (above) and "bad" (below) fit quality', min = 0, max = 1, value = 0.1, step = 0.05),
+                 br(),
+                 h4("cps quality"),
+                 numericInput("cps_low", "The lower cps bound", value = 1000),
+                 numericInput("cps_high", "The higher cps bound", value = 100000000),
+                 br(),
+                 h4("rsd quality"),
+                 sliderInput("rsd_quality", 'rsd quality for "good" (below first), "okay" (below second) and "bad" (above second)', 
+                             min = 0,
+                             max = 10,
+                             value = c(1, 2),
+                             step = 0.1)
                ),
                mainPanel(
-                 width = 7
-                 
+                 width = 7,
+                 htmlOutput("metal_title"),
+                 br(),
+                 formattableOutput("quality_table")
                )
-             )
+             ),
+             tabPanel("Experiment overview",
+                      sidebarPanel(
+                      ),
+                      mainPanel(
+                        width = 7
+                      )
+             ),
   )
 )
 
@@ -115,26 +146,26 @@ server <- function(input, output, session) {
       filter(expected_ppb != 0) %>% 
       mutate(error = abs(expected_ppb - concentration_ppb)) %>% 
       group_by(expected_ppb) %>% 
-      mutate(quant50 = quantile(error, na.rm = TRUE, probs = c(0.5)),
-             quant75 = quantile(error, na.rm = TRUE, probs = c(0.75)),
-             quant90 = quantile(error, na.rm = TRUE, probs = c(0.9))) %>% 
+      mutate(quant50 = quantile(error, na.rm = TRUE, probs = c(input$ppb_quantile_low)),
+             quant75 = quantile(error, na.rm = TRUE, probs = c(input$ppb_quantile_mid)),
+             quant90 = quantile(error, na.rm = TRUE, probs = c(input$ppb_quantile_high))) %>% 
       ungroup() %>% 
       mutate(quality_ppb = case_when(error <= quant50 ~ 2,
                                      error <= quant75 ~ 1,
                                      error <= quant90 ~ -1,
                                      TRUE ~ -2)) %>% 
       select(-c(quant50, quant75, quant90)) %>% 
-      mutate(quant50 = quantile(unique(fit), na.rm = TRUE, probs = c(0.5)),
-             quant25 = quantile(unique(fit), na.rm = TRUE, probs = c(0.25)),
-             quant10 = quantile(unique(fit), na.rm = TRUE, probs = c(0.1))) %>% 
+      mutate(quant50 = quantile(unique(fit), na.rm = TRUE, probs = c(input$fit_quantile_high)),
+             quant25 = quantile(unique(fit), na.rm = TRUE, probs = c(input$fit_quantile_mid)),
+             quant10 = quantile(unique(fit), na.rm = TRUE, probs = c(input$fit_quantile_low))) %>% 
       mutate(quality_fit = case_when(fit >= quant50 ~ 10,
                                      fit >= quant25 ~ 5,
                                      fit >= quant10 ~ -5,
                                      TRUE ~ -10)) %>% 
       select(-c(quant50, quant25, quant10)) %>% 
-      mutate(quality_cps = ifelse(cps < 1000 | cps > 100000000 | is.na(cps), -2, 2)) %>% 
-      mutate(quality_rsd = case_when(rsd <= 1 ~ 2,
-                                     rsd <= 2 ~ 1,
+      mutate(quality_cps = ifelse(cps < input$cps_low | cps > input$cps_high | is.na(cps), -2, 2)) %>% 
+      mutate(quality_rsd = case_when(rsd <= input$rsd_quality[1] ~ 2,
+                                     rsd <= input$rsd_quality[2] ~ 1,
                                      TRUE ~ -2)) %>% 
       group_by(metal_mode) %>% 
       mutate(quality = sum(quality_ppb, quality_rsd, quality_cps, unique(quality_fit))) %>% 
@@ -172,16 +203,27 @@ server <- function(input, output, session) {
     updateSelectizeInput(session, "metal", choices = select_metal(), server = TRUE)
   })
   
-  output$fit <- renderText({
-    if(is.null(read_input())){
-       return(paste("<b>R<sup>2</sup>:", 0, "</b>"))
+  # select best metal modes 
+  select_best_metal_modes <- reactive({
+    if(is.null(assess_calibration_quality())){
+      return(NULL)
     } else {
-      r2 <- read_input() |> 
-        filter(metal_mode == input$metal_mode) |> 
-        pull(fit) |> 
+      metal_modes <- assess_calibration_quality() %>% 
+        filter(metal == input$metal) %>% 
+        pull(metal_mode) %>% 
         unique()
-      
-      paste("<b>R<sup>2</sup>:", r2, "</b>")
+    }
+  })
+  observe({
+    updateSelectizeInput(session, "best_metal_mode", choices = select_best_metal_modes(), server = TRUE)
+  })
+  
+  # Make header
+  output$metal_title <- renderText({
+    if(is.null(select_metal())){
+      return(NULL)
+    } else {
+      paste("<h1>", input$metal, "</h1>")
     }
   })
   
@@ -190,8 +232,10 @@ server <- function(input, output, session) {
     if(is.null(select_metal_mode())){
       return(NULL)
     } else {
-      plot <- read_input() |> 
-        filter(metal_mode == input$metal_mode) |> 
+      data_metal_mode <- read_input() |> 
+        filter(metal_mode == input$metal_mode)
+      
+      plot <- data_metal_mode |> 
         ggplot(aes(x = expected_ppb, y = concentration_ppb))+
         geom_point(size = 2)+
         geom_smooth(formula = y ~ x,
@@ -210,7 +254,14 @@ server <- function(input, output, session) {
               strip.background = element_blank()
         )
 
-      ggplotly(plot)
+      ggplotly(plot) %>% 
+        add_annotations(
+          x= 0.5,
+          y= max(data_metal_mode$expected_ppb, na.rm = TRUE),
+          xanchor = "left",
+          text = paste0("<b>R<sup>2</sup>: ", unique(data_metal_mode$fit), "</b>"),
+          showarrow = F
+        )
     }
   })
   
@@ -266,7 +317,7 @@ server <- function(input, output, session) {
         )
       
       ggplotly(plot) %>% 
-        layout(yaxis = list(hoverformat = '.6f'))
+        layout(yaxis = list(hoverformat = '.6f')) 
     }
   })
   
@@ -304,6 +355,37 @@ server <- function(input, output, session) {
         ))
     }
   })
+  
+  # Make metal mode quality table
+  output$quality_table <- renderFormattable({
+    if(is.null(assess_calibration_quality())){
+      return(NULL)
+    } else {
+      assess_calibration_quality() %>% 
+        filter(metal == input$metal) |>
+        arrange(desc(quality)) %>% 
+        formattable(list(
+          metal = FALSE,
+          quality_ppb = formatter("span", style = x ~ case_when(x == 2 ~ style(color = "green", font.weight = "bold"),
+                                                                x == 1 ~ style(color = "#c4e84d", font.weight = "bold"),
+                                                                x == -1 ~ style(color = "#e38c29", font.weight = "bold"),
+                                                                x == -2 ~ style(color = "red", font.weight = "bold"))),
+          quality_cps = formatter("span", style = x ~ case_when(x == 2 ~ style(color = "green", font.weight = "bold"),
+                                                                x == 1 ~ style(color = "#c4e84d", font.weight = "bold"),
+                                                                x == -1 ~ style(color = "#e38c29", font.weight = "bold"),
+                                                                x == -2 ~ style(color = "red", font.weight = "bold"))),
+          quality_rsd = formatter("span", style = x ~ case_when(x == 2 ~ style(color = "green", font.weight = "bold"),
+                                                                x == 1 ~ style(color = "#c4e84d", font.weight = "bold"),
+                                                                x == -1 ~ style(color = "#e38c29", font.weight = "bold"),
+                                                                x == -2 ~ style(color = "red", font.weight = "bold"))),
+          quality_fit = formatter("span", style = x ~ case_when(x == 10 ~ style(color = "green", font.weight = "bold"),
+                                                                x == 5 ~ style(color = "#c4e84d", font.weight = "bold"),
+                                                                x == -5 ~ style(color = "#e38c29", font.weight = "bold"),
+                                                                x == -10 ~ style(color = "red", font.weight = "bold"))))
+        )
+    }
+  })
+  
 }
 
 # Run the application 
