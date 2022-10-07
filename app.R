@@ -9,6 +9,7 @@ library(plotly)
 library(protti)
 library(formattable)
 library(forcats)
+library(DT)
 
 # Define UI for application that draws a histogram
 ui <- fluidPage(
@@ -74,9 +75,12 @@ ui <- fluidPage(
              ),
              tabPanel("Experiment overview",
                       sidebarPanel(
+                        h2("Selected metal modes"),
+                        verbatimTextOutput("list_best_metals")
                       ),
                       mainPanel(
-                        width = 7
+                        width = 7,
+                        DT::dataTableOutput("sample_table")
                       )
              ),
   )
@@ -84,12 +88,16 @@ ui <- fluidPage(
 
 # Define server logic required to draw a histogram
 server <- function(input, output, session) {
-  read_input <- reactive({
+  # variables
+  start <- 0
+  list_best_metal_modes <- NULL
+  
+  read_result <- reactive({
     if(is.null(input$raw_data)){
       return(NULL)
     } else {
       # Read data
-      raw_data <- read_excel(input$raw_data$datapath)[-1,]
+      raw_data <- suppressMessages(read_excel(input$raw_data$datapath)[-1,])
       
       col_names <- colnames(raw_data)
       
@@ -114,34 +122,81 @@ server <- function(input, output, session) {
       
       colnames(raw_data) <- col_names
       
-      data <- raw_data |>
+      raw_data
+    }
+  })
+  
+  # Clean up calibration curve data
+  clean_calibration_curve <- reactive({
+    if(is.null(read_result())){
+      return(NULL)
+    } else {
+      data <- read_result() |>
         filter(sample_type %in% c("CalBlk", "CalStd")) |>
         select(-sample_type) |>
         pivot_longer(cols = -sample_name,
                      names_to = "metal_mode",
                      values_to = "value") |> 
-        mutate(value = as.numeric(value)) |>  
+        mutate(value = suppressWarnings(as.numeric(value))) |>  
         mutate(type = str_extract(metal_mode, pattern = "concentration_ppb|cps|rsd")) |> 
         mutate(metal_mode = str_replace(metal_mode, pattern = "concentration_ppb|cps|rsd", replacement = "")) |> 
         pivot_wider(names_from = type, values_from = value) |> 
-        mutate(expected_ppb = as.numeric(str_extract(sample_name, pattern = "\\d+(?= ppb)"))) 
+        mutate(expected_ppb = as.numeric(str_extract(sample_name, pattern = "\\d+(?= ppb)"))) %>% 
+        mutate(metal = str_extract(metal_mode, pattern = "(?<=\\d  )[:alpha:]+"))
       
         data <- split(data, data$metal_mode) |>
         map_dfr(.f = ~ {
           .x |> 
             mutate(fit = summary(lm(concentration_ppb ~ expected_ppb, data = .))$r.squared)
-        }) %>% 
-        mutate(metal = str_extract(metal_mode, pattern = "(?<=\\d  )[:alpha:]+"))
+        }) 
+      
+      data
+    }
+  })
+  
+  # clean up samples
+  clean_samples <- reactive({
+    if(is.null(read_result())){
+      return(NULL)
+    } else {
+      data <- read_result() |>
+        filter(sample_type %in% c("Sample")) |>
+        select(-sample_type) |>
+        pivot_longer(cols = -sample_name,
+                     names_to = "metal_mode",
+                     values_to = "value") |> 
+        mutate(value = suppressWarnings(as.numeric(value))) |>  
+        mutate(type = str_extract(metal_mode, pattern = "concentration_ppb|cps|rsd")) |> 
+        mutate(metal_mode = str_replace(metal_mode, pattern = "concentration_ppb|cps|rsd", replacement = "")) |> 
+        pivot_wider(names_from = type, values_from = value) |> 
+        mutate(metal = str_extract(metal_mode, pattern = "(?<=\\d  )[:alpha:]+")) %>% 
+        mutate(concentration_ppb = ifelse(is.na(concentration_ppb), 0, concentration_ppb))
+      
+      data
+    }
+  })
+  
+  # sample high rsd 
+  
+  sample_rsd <- reactive({
+    if(is.null(clean_samples())){
+      return(NULL)
+    } else {
+      data <- clean_samples() %>% 
+        group_by(metal_mode) %>% 
+        mutate(samples_high_rsd = sum(rsd > 2 | is.na(rsd), na.rm = TRUE),
+               percent_samples_high_rsd = round(sum(rsd > 2 | is.na(rsd), na.rm = TRUE) / n() * 100, digits = 2)) %>% 
+        distinct(samples_high_rsd, percent_samples_high_rsd, metal_mode)
       
       data
     }
   })
   
   assess_calibration_quality <- reactive({
-    if(is.null(read_input())){
+    if(is.null(clean_calibration_curve())){
       return(NULL)
     } else {
-    data_quality <- read_input() %>% 
+    data_quality <- clean_calibration_curve() %>% 
       select(-sample_name) %>% 
       filter(expected_ppb != 0) %>% 
       mutate(error = abs(expected_ppb - concentration_ppb)) %>% 
@@ -170,7 +225,8 @@ server <- function(input, output, session) {
       group_by(metal_mode) %>% 
       mutate(quality = sum(quality_ppb, quality_rsd, quality_cps, unique(quality_fit))) %>% 
       ungroup() %>% 
-      select(-c(concentration_ppb, cps, rsd, fit, error))
+      select(-c(concentration_ppb, cps, rsd, fit, error)) %>% 
+      left_join(sample_rsd(), by = "metal_mode")
     
     data_quality
     }
@@ -178,10 +234,10 @@ server <- function(input, output, session) {
   
   # select metal mode
   select_metal_mode <- reactive({
-    if(is.null(read_input())){
+    if(is.null(clean_calibration_curve())){
       return(NULL)
     } else {
-      distinct_data <- read_input() %>% 
+      distinct_data <- clean_calibration_curve() %>% 
         distinct(metal_mode, metal)
       
       modes <- split(distinct_data$metal_mode, distinct_data$metal)
@@ -193,10 +249,10 @@ server <- function(input, output, session) {
   
   # select metal
   select_metal <- reactive({
-    if(is.null(assess_calibration_quality())){
+    if(is.null(clean_calibration_curve())){
       return(NULL)
     } else {
-      metals <- unique(assess_calibration_quality()$metal)
+      metals <- unique(clean_calibration_curve()$metal)
     }
   })
   observe({
@@ -215,7 +271,12 @@ server <- function(input, output, session) {
     }
   })
   observe({
-    updateSelectizeInput(session, "best_metal_mode", choices = select_best_metal_modes(), server = TRUE)
+    if(!is.null(list_best_metal_modes[[input$metal]]) && list_best_metal_modes[[input$metal]] != ""){
+      selected_modes <- list_best_metal_modes[[input$metal]]
+    } else {
+      selected_modes <- NULL
+    }
+    updateSelectizeInput(session, "best_metal_mode", choices = select_best_metal_modes(), selected = selected_modes, server = TRUE)
   })
   
   # Make header
@@ -227,12 +288,49 @@ server <- function(input, output, session) {
     }
   })
   
+  # metal mode selection
+  observe({
+    # observe events in
+    input$best_metal_mode
+    input$metal
+    
+    # make initial list
+    if(start == 1){
+    print("Metal list created")
+    list_best_metal_modes <<- vector(mode = "list", length = length(select_metal()))
+    names(list_best_metal_modes) <<- select_metal()
+    }
+
+    # modify list
+    if(start > 1){
+        print("Metal list modified")
+      if(is.null(input$best_metal_mode)){
+        list_best_metal_modes[[input$metal]] <<- ""
+      } else {
+        list_best_metal_modes[[input$metal]] <<- input$best_metal_mode
+      }
+    }
+    
+    print(list_best_metal_modes)
+    
+    # Update counter for inital list
+    start <<- start + 1
+  })
+  
+  output$list_best_metals <- renderPrint({
+    if(is.null(input$best_metal_mode) & input$metal == ""){
+      return("Please load data!")
+    } else {
+      glimpse(list_best_metal_modes)
+    }
+  })
+  
   # Make cuve plot
   output$curve_plot <- renderPlotly({
     if(is.null(select_metal_mode())){
       return(NULL)
     } else {
-      data_metal_mode <- read_input() |> 
+      data_metal_mode <- clean_calibration_curve() |> 
         filter(metal_mode == input$metal_mode)
       
       plot <- data_metal_mode |> 
@@ -267,10 +365,10 @@ server <- function(input, output, session) {
   
   # Make error plot
   output$error_plot <- renderPlotly({
-    if(is.null(read_input())){
+    if(is.null(clean_calibration_curve())){
       return(NULL)
     } else {
-      plot <- read_input() |> 
+      plot <- clean_calibration_curve() |> 
         mutate(error = abs(expected_ppb - concentration_ppb)) %>% 
         mutate(expected_ppb = forcats::fct_reorder(as.character(expected_ppb),expected_ppb)) %>% 
         ggplot(aes(expected_ppb, error))+
@@ -295,10 +393,10 @@ server <- function(input, output, session) {
   
   # Make r square plot
   output$fit_plot <- renderPlotly({
-    if(is.null(read_input())){
+    if(is.null(clean_calibration_curve())){
       return(NULL)
     } else {
-      plot <- read_input() |> 
+      plot <- clean_calibration_curve() |> 
         distinct(fit) %>% 
         ggplot(aes(x = "All curve fits", y = fit))+
         geom_boxplot()+
@@ -326,7 +424,7 @@ server <- function(input, output, session) {
     if(is.null(select_metal_mode())){
       return(NULL)
     } else {
-      read_input() |>
+      clean_calibration_curve() |>
         mutate(error = abs(expected_ppb - concentration_ppb)) %>% 
         group_by(expected_ppb) %>% 
         mutate(quant50 = quantile(error, na.rm = TRUE, probs = c(0.5)),
@@ -386,6 +484,22 @@ server <- function(input, output, session) {
     }
   })
   
+  # Make sample table 
+  output$sample_table <- DT::renderDataTable({
+    if(is.null(clean_samples()) & is.null(input$best_metal_mode)){
+      return(NULL)
+    } else {
+      clean_samples() %>% 
+        filter(metal_mode %in% unlist(list_best_metal_modes)) %>% 
+        formattable(list(
+          rsd = formatter("span", style = x ~ case_when(x > 2 ~ style(color = "red", font.weight = "bold"),
+                                                        x <= 1 ~ style(color = "green", font.weight = "bold"),
+                                                        x <= 2 ~ style(color = "#c4e84d", font.weight = "bold")))
+        )
+        ) %>% 
+        formattable::as.datatable()
+    }
+  })
 }
 
 # Run the application 
