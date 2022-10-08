@@ -80,6 +80,7 @@ ui <- fluidPage(
                       ),
                       mainPanel(
                         width = 7,
+                        plotlyOutput("ppb_sample_distribution"),
                         DT::dataTableOutput("sample_table")
                       )
              ),
@@ -177,7 +178,6 @@ server <- function(input, output, session) {
   })
   
   # sample high rsd 
-  
   sample_rsd <- reactive({
     if(is.null(clean_samples())){
       return(NULL)
@@ -499,6 +499,34 @@ server <- function(input, output, session) {
         ) %>% 
         formattable::as.datatable()
     }
+  })
+  
+  # Plot ppb distribution per sample and metal
+  output$ppb_sample_distribution <- renderPlotly({
+    if(is.null(clean_samples())){
+      return(NULL)
+    } else {
+      plot <- clean_samples() %>% 
+        ggplot(aes(x = sample_name, y = concentration_ppb))+
+        geom_boxplot()+
+        labs(title = "ppb Distribution", x = "", y = "Concentration [ppb]")+
+        facet_wrap(~metal, scales = "free")+
+        theme_bw() +
+        theme(plot.title = ggplot2::element_text(size = 20),
+              axis.title.x = ggplot2::element_text(size = 15),
+              axis.text.y = ggplot2::element_text(size = 15),
+              axis.text.x = ggplot2::element_text(size = 12),
+              axis.title.y = ggplot2::element_text(size = 15),
+              legend.title = ggplot2::element_text(size = 15),
+              legend.text = ggplot2::element_text(size = 15),
+              strip.text.x = ggplot2::element_text(size = 15),
+              strip.text = ggplot2::element_text(size = 15),
+              strip.background = element_blank()
+        )
+      
+      ggplotly(plot)
+    }
+      
   })
 }
 
