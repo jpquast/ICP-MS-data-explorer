@@ -11,13 +11,53 @@ library(formattable)
 library(forcats)
 library(DT)
 
-# Define UI for application that draws a histogram
+parameters <- data.frame(
+  parameter = c("file_name", 
+                "date",
+                "ppb_quantile_low", 
+                "ppb_quantile_mid", 
+                "ppb_quantile_high", 
+                "fit_quantile_high",
+                "fit_quantile_mid",
+                "fit_quantile_low",
+                "cps_low",
+                "cps_high",
+                "rsd_quality_low",
+                "rsd_quality_high",
+                "best_metal_modes",
+                "dilution_factor",
+                "dilution_factor_samples",
+                "weight"),
+  value = c("",
+            "",
+            "0.5",
+            "0.75",
+            "0.9",
+            "0.5",
+            "0.25",
+            "0.1",
+            "1000",
+            "100000000",
+            "1",
+            "2",
+            "",
+            "",
+            "",
+            "")
+)
+
 ui <- fluidPage(
-  navbarPage("ICP-MS Calibration Curve explorer",
+  navbarPage("ICP-MS Data Explorer",
              tabPanel("Calibration overview",
                       sidebarPanel(
                         fileInput("raw_data",
-                                  "ICP-MS raw data")
+                                  "ICP-MS raw data",
+                                  accept = c(".xlsx")),
+                        h4("Parameter file"),
+                        helpText("If you performed an analysis on the same dataset before and you downloaded the 
+                                 parameter file, you can provide it here in order to obtain the same result."),
+                        fileInput("parameters_input", label = NULL, accept = c(".csv")),
+                        downloadButton("parameters_output", label = "Download Parameters")
                       ),
                       mainPanel(
                         width = 7,
@@ -46,31 +86,33 @@ ui <- fluidPage(
                  br(),
                  h2("Advanced settings"),
                  h4("ppb quality"),
-                 sliderInput("ppb_quantile_low", 'Quantile for "good" (below) ppb quality', min = 0, max = 1, value = 0.5, step = 0.05),
-                 sliderInput("ppb_quantile_mid", 'Quantile for "okay" (below) ppb quality', min = 0, max = 1, value = 0.75, step = 0.05),
-                 sliderInput("ppb_quantile_high", 'Quantile for "not good" (below) and "bad" (above) ppb quality', min = 0, max = 1, value = 0.9, step = 0.05),
+                 sliderInput("ppb_quantile_low", 'Quantile for "good" (below) ppb quality', min = 0, max = 1, value = as.numeric(parameters[parameters$parameter == "ppb_quantile_low",]$value), step = 0.05),
+                 sliderInput("ppb_quantile_mid", 'Quantile for "okay" (below) ppb quality', min = 0, max = 1, value = as.numeric(parameters[parameters$parameter == "ppb_quantile_mid",]$value), step = 0.05),
+                 sliderInput("ppb_quantile_high", 'Quantile for "not good" (below) and "bad" (above) ppb quality', min = 0, max = 1, value = as.numeric(parameters[parameters$parameter == "ppb_quantile_high",]$value), step = 0.05),
                  br(),
                  h4("fit quality"),
-                 sliderInput("fit_quantile_high", 'Quantile for "good" (above) fit quality', min = 0, max = 1, value = 0.5, step = 0.05),
-                 sliderInput("fit_quantile_mid", 'Quantile for "okay" (above) fit quality', min = 0, max = 1, value = 0.25, step = 0.05),
-                 sliderInput("fit_quantile_low", 'Quantile for "not good" (above) and "bad" (below) fit quality', min = 0, max = 1, value = 0.1, step = 0.05),
+                 sliderInput("fit_quantile_high", 'Quantile for "good" (above) fit quality', min = 0, max = 1, value = as.numeric(parameters[parameters$parameter == "fit_quantile_high",]$value), step = 0.05),
+                 sliderInput("fit_quantile_mid", 'Quantile for "okay" (above) fit quality', min = 0, max = 1, value = as.numeric(parameters[parameters$parameter == "fit_quantile_mid",]$value), step = 0.05),
+                 sliderInput("fit_quantile_low", 'Quantile for "not good" (above) and "bad" (below) fit quality', min = 0, max = 1, value = as.numeric(parameters[parameters$parameter == "fit_quantile_low",]$value), step = 0.05),
                  br(),
                  h4("cps quality"),
-                 numericInput("cps_low", "The lower cps bound", value = 1000),
-                 numericInput("cps_high", "The higher cps bound", value = 100000000),
+                 numericInput("cps_low", "The lower cps bound", value = as.numeric(parameters[parameters$parameter == "cps_low",]$value)),
+                 numericInput("cps_high", "The higher cps bound", value = as.numeric(parameters[parameters$parameter == "cps_high",]$value)),
                  br(),
                  h4("rsd quality"),
                  sliderInput("rsd_quality", 'rsd quality for "good" (below first), "okay" (below second) and "bad" (above second)', 
                              min = 0,
                              max = 10,
-                             value = c(1, 2),
+                             value = c(as.numeric(parameters[parameters$parameter == "rsd_quality_low",]$value), as.numeric(parameters[parameters$parameter == "rsd_quality_high",]$value)),
                              step = 0.1)
                ),
                mainPanel(
                  width = 7,
                  htmlOutput("metal_title"),
                  br(),
-                 formattableOutput("quality_table")
+                 formattableOutput("quality_table"),
+                 br(),
+                 plotlyOutput("ppb_sample_distribution")
                )
              ),
              tabPanel("Experiment overview",
@@ -80,8 +122,39 @@ ui <- fluidPage(
                       ),
                       mainPanel(
                         width = 7,
-                        plotlyOutput("ppb_sample_distribution"),
                         DT::dataTableOutput("sample_table")
+                      )
+             ),
+             tabPanel("Analyse experiment",
+                      sidebarPanel(
+                        h2("Specify sample properties"),
+                        selectizeInput("sample", "Select samples", choices = NULL, multiple = TRUE),
+                        numericInput("dilution_factor", "Specify dilution factor", value = NULL),
+                        numericInput("weight", "Specify sample weight if applicable", value = NULL),
+                        actionButton("add_sample_properties", "Add", icon = icon("plus")),
+                        actionButton("reset_sample_properties", "Reset", icon = icon("trash-can")),
+                        br(),
+                        br(),
+                        verbatimTextOutput("sample_properties"),
+                        br(),
+                        downloadButton("download_result", label = "Download Results")
+                      ),
+                      mainPanel(
+                        width = 7,
+                        DT::dataTableOutput("result")
+                      )
+             ),
+             tabPanel("Plot results",
+                      sidebarPanel(
+                        h2("Create plot"),
+                        selectizeInput("sample_plot", "Select samples", choices = NULL, multiple = TRUE),
+                        textInput("plot_title", "Plot title", value = "Plot title"),
+                        textInput("x_axis", "X-Axis", value = "Sample"),
+                        textInput("y_axis", "Y-Axis", value = "Concentration [ppb]")
+                      ),
+                      mainPanel(
+                        width = 7,
+                        plotOutput("result_plot", height = 600)
                       )
              ),
   )
@@ -92,6 +165,90 @@ server <- function(input, output, session) {
   # variables
   start <- 0
   list_best_metal_modes <- NULL
+  sample_names <- NULL
+  sample_properties_df <- data.frame(dilution_factor = c(),
+                                     weight = c(),
+                                     sample_name = c())
+
+  # Update parameter file if uploaded
+  observeEvent(input$parameters_input, {
+    parameters <<- suppressMessages(read.csv(input$parameters_input$datapath))
+    
+    # update inputs
+    updateSliderInput(session, "ppb_quantile_low", value = as.numeric(parameters[parameters$parameter == "ppb_quantile_low",]$value))
+    updateSliderInput(session, "ppb_quantile_mid", value = as.numeric(parameters[parameters$parameter == "ppb_quantile_mid",]$value))
+    updateSliderInput(session, "ppb_quantile_high", value = as.numeric(parameters[parameters$parameter == "ppb_quantile_high",]$value))
+    
+    updateSliderInput(session, "fit_quantile_high", value = as.numeric(parameters[parameters$parameter == "fit_quantile_high",]$value))
+    updateSliderInput(session, "fit_quantile_mid", value = as.numeric(parameters[parameters$parameter == "fit_quantile_mid",]$value))
+    updateSliderInput(session, "fit_quantile_low", value = as.numeric(parameters[parameters$parameter == "fit_quantile_low",]$value))
+    
+    updateNumericInput(session, "cps_low", value = as.numeric(parameters[parameters$parameter == "cps_low",]$value))
+    updateNumericInput(session, "cps_high", value = as.numeric(parameters[parameters$parameter == "cps_high",]$value))
+    
+    updateSliderInput(session, "rsd_quality", value = c(as.numeric(parameters[parameters$parameter == "rsd_quality_low",]$value), as.numeric(parameters[parameters$parameter == "rsd_quality_high",]$value)))
+    
+    list_best_metal_modes <<- map(split(str_remove_all(unlist(str_split(parameters[parameters$parameter == "best_metal_modes",]$value, pattern = "\\| ")), pattern = "[:alpha:]+: "), 
+              str_extract(unlist(str_split(parameters[parameters$parameter == "best_metal_modes",]$value, pattern = "\\| ")), pattern = "[:alpha:]+(?=:)")),
+        .f = ~{
+          unlist(str_split(.x, pattern = ", "))
+        }
+    )
+    
+    sample_properties_df <<- parameters %>% 
+      filter(parameter %in% c("dilution_factor", "dilution_factor_samples", "weight")) %>% 
+      mutate(parameter = case_when(parameter == "dilution_factor_samples" ~ "sample_name",
+                                   TRUE ~ parameter)) %>% 
+      pivot_wider(names_from = parameter, values_from = value) %>% 
+      mutate(across(everything(), ~str_split(.x, pattern = "\\| "))) %>% 
+      unnest(c(dilution_factor, weight, sample_name)) %>% 
+      mutate(dilution_factor = as.numeric(dilution_factor),
+             weight = as.numeric(weight))
+    
+    sample_names <<- sample_names[!sample_names %in% unlist(str_split(sample_properties_df$sample_name, pattern = ","))]
+    
+    updateSelectizeInput(session, "sample", choices = sample_names, server = TRUE) 
+  })
+  
+  # Generate parameters file reactively once it is downloaded
+  
+  parameters_download <- reactive({
+    best_metal_mode_string <- paste0(
+      map2(.x = list_best_metal_modes,
+                  .y = names(list_best_metal_modes),
+                  .f = ~ {
+                    paste0(.y, ": ", paste0(.x, collapse = ", "))
+                  }), 
+      collapse = "| ")
+    
+    sample_result_parameters <- sample_properties_df %>% 
+      mutate(across(everything(), ~ as.character((.x)))) %>% 
+      pivot_longer(cols = c(dilution_factor, weight, sample_name), names_to = "parameter", values_to = "value") %>% 
+      group_by(parameter) %>% 
+      mutate(value = paste0(value, collapse = "| ")) %>% 
+      ungroup() %>% 
+      distinct() %>% 
+      mutate(parameter = case_when(parameter == "sample_name" ~ "dilution_factor_samples",
+                                   TRUE ~ parameter))
+    
+    parameters <<- parameters %>% 
+      mutate(value = ifelse(parameter == "best_metal_modes", best_metal_mode_string, value),
+             value = ifelse(parameter == "date", as.character(Sys.time()), value),
+             value = ifelse(parameter == "file_name", input$raw_data$name, value)
+      ) %>% 
+      filter(!parameter %in% c("dilution_factor", "dilution_factor_samples", "weight")) %>% 
+      bind_rows(sample_result_parameters)
+  })
+  
+  # Download parameters
+  output$parameters_output <- downloadHandler(
+    filename = function() {
+      paste0("parameters_", Sys.time(), ".csv")
+    },
+    content = function(file) {
+      write.csv(parameters_download(), file, row.names = FALSE)
+    }
+  )
   
   read_result <- reactive({
     if(is.null(input$raw_data)){
@@ -171,7 +328,10 @@ server <- function(input, output, session) {
         mutate(metal_mode = str_replace(metal_mode, pattern = "concentration_ppb|cps|rsd", replacement = "")) |> 
         pivot_wider(names_from = type, values_from = value) |> 
         mutate(metal = str_extract(metal_mode, pattern = "(?<=\\d  )[:alpha:]+")) %>% 
-        mutate(concentration_ppb = ifelse(is.na(concentration_ppb), 0, concentration_ppb))
+        mutate(concentration_ppb = ifelse(is.na(concentration_ppb), 0, concentration_ppb)) %>% 
+        group_by(sample_name, metal) %>% 
+        mutate(outlier = concentration_ppb %in% boxplot.stats(concentration_ppb)$out) %>% 
+        ungroup() 
       
       data
     }
@@ -193,9 +353,17 @@ server <- function(input, output, session) {
   })
   
   assess_calibration_quality <- reactive({
-    if(is.null(clean_calibration_curve())){
+    if(is.null(clean_calibration_curve()) | is.null(clean_samples())){
       return(NULL)
     } else {
+    sample_outlier <- clean_samples() %>%
+      distinct(sample_name, outlier, metal_mode) %>%
+      group_by(metal_mode) %>%
+      mutate(n_sample_outlier = sum(outlier, na.rm = TRUE),
+             percent_sample_outlier = round((n_sample_outlier/n())*100, digits = 2)) %>%
+      ungroup() %>%
+      distinct(metal_mode, n_sample_outlier, percent_sample_outlier)
+      
     data_quality <- clean_calibration_curve() %>% 
       select(-sample_name) %>% 
       filter(expected_ppb != 0) %>% 
@@ -226,7 +394,8 @@ server <- function(input, output, session) {
       mutate(quality = sum(quality_ppb, quality_rsd, quality_cps, unique(quality_fit))) %>% 
       ungroup() %>% 
       select(-c(concentration_ppb, cps, rsd, fit, error)) %>% 
-      left_join(sample_rsd(), by = "metal_mode")
+      left_join(sample_rsd(), by = "metal_mode") %>% 
+      left_join(sample_outlier, by = "metal_mode")
     
     data_quality
     }
@@ -271,6 +440,7 @@ server <- function(input, output, session) {
     }
   })
   observe({
+    input$parameters_input
     if(!is.null(list_best_metal_modes[[input$metal]]) && list_best_metal_modes[[input$metal]] != ""){
       selected_modes <- list_best_metal_modes[[input$metal]]
     } else {
@@ -293,7 +463,6 @@ server <- function(input, output, session) {
     # observe events in
     input$best_metal_mode
     input$metal
-    
     # make initial list
     if(start == 1){
     print("Metal list created")
@@ -427,9 +596,9 @@ server <- function(input, output, session) {
       clean_calibration_curve() |>
         mutate(error = abs(expected_ppb - concentration_ppb)) %>% 
         group_by(expected_ppb) %>% 
-        mutate(quant50 = quantile(error, na.rm = TRUE, probs = c(0.5)),
-               quant75 = quantile(error, na.rm = TRUE, probs = c(0.75)),
-               quant90 = quantile(error, na.rm = TRUE, probs = c(0.9))) %>% 
+        mutate(quant50 = quantile(error, na.rm = TRUE, probs = c(input$ppb_quantile_low)),
+               quant75 = quantile(error, na.rm = TRUE, probs = c(input$ppb_quantile_mid)),
+               quant90 = quantile(error, na.rm = TRUE, probs = c(input$ppb_quantile_high))) %>% 
         ungroup() %>% 
         mutate(quality = case_when(error <= quant50 ~ "good",
                                    error <= quant75 ~ "okay",
@@ -439,11 +608,11 @@ server <- function(input, output, session) {
         select(expected_ppb, concentration_ppb, cps, rsd, quality) |> 
         formattable(list(
           quality = FALSE,
-          cps = formatter("span", style = x ~ ifelse(x > 100000000 | x < 1000 | is.na(x),
+          cps = formatter("span", style = x ~ ifelse(x > input$cps_high | x < input$cps_low | is.na(x),
                                                        style(color = "red", font.weight = "bold"), NA)),
-          rsd = formatter("span", style = x ~ case_when(x > 2 ~ style(color = "red", font.weight = "bold"),
-                                                        x <= 1 ~ style(color = "green", font.weight = "bold"),
-                                                        x <= 2 ~ style(color = "#c4e84d", font.weight = "bold"))),
+          rsd = formatter("span", style = x ~ case_when(x > input$rsd_quality[2] ~ style(color = "red", font.weight = "bold"),
+                                                        x <= input$rsd_quality[1] ~ style(color = "green", font.weight = "bold"),
+                                                        x <= input$rsd_quality[2] ~ style(color = "#c4e84d", font.weight = "bold"))),
           concentration_ppb = formatter("span", style = ~ case_when(
             quality == "bad" ~ style(color = "red", font.weight = "bold"),
             quality == "not good" ~ style(color = "#e38c29", font.weight = "bold"),
@@ -479,7 +648,12 @@ server <- function(input, output, session) {
           quality_fit = formatter("span", style = x ~ case_when(x == 10 ~ style(color = "green", font.weight = "bold"),
                                                                 x == 5 ~ style(color = "#c4e84d", font.weight = "bold"),
                                                                 x == -5 ~ style(color = "#e38c29", font.weight = "bold"),
-                                                                x == -10 ~ style(color = "red", font.weight = "bold"))))
+                                                                x == -10 ~ style(color = "red", font.weight = "bold"))),
+          n_sample_outlier = formatter("span", style = x ~ case_when(x >= 1 ~ style(color = "red", font.weight = "bold"),
+                                                                TRUE ~ style(color = "green", font.weight = "bold"))),
+          percent_sample_outlier = formatter("span", style = x ~ case_when(x > 0 ~ style(color = "red", font.weight = "bold"),
+                                                                     TRUE ~ style(color = "green", font.weight = "bold")))
+          )
         )
     }
   })
@@ -507,15 +681,16 @@ server <- function(input, output, session) {
       return(NULL)
     } else {
       plot <- clean_samples() %>% 
-        ggplot(aes(x = sample_name, y = concentration_ppb))+
-        geom_boxplot()+
+        filter(metal == input$metal) |>
+        ggplot(aes(x = sample_name, y = concentration_ppb, col = outlier, label = metal_mode))+
+        geom_jitter(width = 0.15)+
         labs(title = "ppb Distribution", x = "", y = "Concentration [ppb]")+
-        facet_wrap(~metal, scales = "free")+
+        scale_color_manual(values=c("black", "red"))+
         theme_bw() +
         theme(plot.title = ggplot2::element_text(size = 20),
               axis.title.x = ggplot2::element_text(size = 15),
               axis.text.y = ggplot2::element_text(size = 15),
-              axis.text.x = ggplot2::element_text(size = 12),
+              axis.text.x = ggplot2::element_text(size = 12, angle = 75, hjust = 1),
               axis.title.y = ggplot2::element_text(size = 15),
               legend.title = ggplot2::element_text(size = 15),
               legend.text = ggplot2::element_text(size = 15),
@@ -524,9 +699,134 @@ server <- function(input, output, session) {
               strip.background = element_blank()
         )
       
-      ggplotly(plot)
+      ggplotly(plot, height = 600) 
     }
       
+  })
+  
+  # update sample selection
+  observe({
+    sample_names <<- unique(clean_samples()$sample_name)
+    
+    updateSelectizeInput(session, "sample", choices = sample_names, server = TRUE)
+  })
+  
+  # Add samples to dataframe
+  observeEvent(input$add_sample_properties, {
+    new_entry <- data.frame(dilution_factor = input$dilution_factor,
+                            weight = ifelse(input$weight == 0, NA, input$weight),
+                            sample_name = paste0(input$sample, collapse = ","))
+    
+    sample_properties_df <<- sample_properties_df %>% 
+      bind_rows(new_entry)
+    
+    sample_names <<- sample_names[!sample_names %in% input$sample]
+    updateSelectizeInput(session, "sample", choices = sample_names, server = TRUE)
+  })
+  
+  # Reset sample dataframe
+  observeEvent(input$reset_sample_properties, {
+    sample_properties_df <<- data.frame(dilution_factor = c(),
+                                        weight = c(),
+                                        sample_name = c())
+    
+    sample_names <<- unique(clean_samples()$sample_name)
+    updateSelectizeInput(session, "sample", choices = sample_names, server = TRUE)
+  })
+  
+  # return dataframe
+  output$sample_properties <- renderPrint({
+    input$add_sample_properties
+    input$reset_sample_properties
+    input$parameters_input
+    print(str(sample_properties_df))
+  })
+  
+  # create result table 
+  calculate_result <- reactive({
+    input$add_sample_properties
+    input$reset_sample_properties
+    input$parameters_input
+    if(is.null(clean_samples()) | nrow(sample_properties_df) == 0){
+      return(NULL)
+    } else {
+      
+      sample_properties_df_prepared <- sample_properties_df %>% 
+        mutate(sample_name = str_split(sample_name, pattern = ",")) %>% 
+        unnest(sample_name)
+      
+      clean_samples() %>% 
+        filter(metal_mode %in% unlist(list_best_metal_modes)) %>%  # select only the chosen metal modes
+        filter(sample_name %in% sample_properties_df_prepared$sample_name) %>% 
+        select(sample_name, metal, metal_mode, concentration_ppb, rsd) %>% 
+        left_join(sample_properties_df_prepared, by = "sample_name") %>% 
+        mutate(undiluted_concentration = ifelse(is.na(weight), 
+                                                concentration_ppb * dilution_factor,
+                                                (concentration_ppb * dilution_factor) / weight))
+    }
+  })
+  
+  # return table with sample concentrations
+  output$result <- DT::renderDataTable({
+    input$add_sample_properties
+    input$reset_sample_properties
+    input$parameters_input
+    if(is.null(clean_samples()) | nrow(sample_properties_df) == 0){
+      return(NULL)
+    } else {
+      calculate_result() %>% 
+        formattable(list(
+          rsd = formatter("span", style = x ~ case_when(x > 2 ~ style(color = "red", font.weight = "bold"),
+                                                        x <= 1 ~ style(color = "green", font.weight = "bold"),
+                                                        x <= 2 ~ style(color = "#c4e84d", font.weight = "bold")))
+        )) %>% 
+        formattable::as.datatable()
+    }
+  })
+  
+  # Download result
+  output$download_result <- downloadHandler(
+    filename = function() {
+      paste0("result_", Sys.time(), ".csv")
+    },
+    content = function(file) {
+      write.csv(calculate_result(), file, row.names = FALSE) 
+    }
+  )
+  
+  # Update plot sample selection
+  observe({
+    updateSelectizeInput(session, "sample_plot", choices = unique(clean_samples()$sample_name), server = TRUE)
+  })
+  
+  # Plot result
+  output$result_plot <- renderPlot({
+    if(is.null(calculate_result()) | is.null(input$sample_plot)){
+      return(NULL)
+    } else {
+      calculate_result() %>% 
+        filter(sample_name %in% input$sample_plot) %>% 
+        mutate(sd = rsd * undiluted_concentration / 100) %>% 
+        ggplot(aes(sample_name, undiluted_concentration))+
+        geom_col(fill = protti_colours[1])+
+        geom_errorbar(aes(ymin = undiluted_concentration-sd, ymax=undiluted_concentration+sd), 
+                      width = 0.2, 
+                      size = 1)+
+        labs(title = input$plot_title, x = input$x_axis, y = input$y_axis) +
+        facet_wrap(~metal_mode, ncol = 4, scale = "free")+
+        theme_bw() +
+        theme(plot.title = ggplot2::element_text(size = 20),
+              axis.title.x = ggplot2::element_text(size = 15),
+              axis.text.y = ggplot2::element_text(size = 15),
+              axis.text.x = ggplot2::element_text(size = 12, angle = 75, hjust = 1),
+              axis.title.y = ggplot2::element_text(size = 15),
+              legend.title = ggplot2::element_text(size = 15),
+              legend.text = ggplot2::element_text(size = 15),
+              strip.text.x = ggplot2::element_text(size = 15),
+              strip.text = ggplot2::element_text(size = 15),
+              strip.background = element_blank()
+        )
+    }
   })
 }
 
