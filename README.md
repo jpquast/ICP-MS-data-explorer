@@ -1,6 +1,7 @@
-# icp_ms_data_explorer
+# ICP-MS data explorer
 
-A shiny app for the exploration of ICP-MS data. The app features tools for the exploration of calibration curve as well as for the analysis of samples. 
+A shiny app for the exploration of ICP-MS data. The app features tools for the exploration of calibration curve as well as for the analysis of samples.
+You can also explore the app [online](https://quast.shinyapps.io/icp_ms_data_explorer/)!
 
 ## Input
 
