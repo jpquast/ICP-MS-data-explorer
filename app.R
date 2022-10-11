@@ -46,6 +46,23 @@ parameters <- data.frame(
             "")
 )
 
+metal_mw <- data.frame(metal = c("Ca",
+                                 "Mg",
+                                 "Fe",
+                                 "Co",
+                                 "Cu",
+                                 "Ni",
+                                 "Zn",
+                                 "Mn"),
+                       mw = c(40.078,
+                              24.305,
+                              55.845,
+                              58.933,
+                              63.546,
+                              58.6934,
+                              65.38,
+                              54.938))
+
 ui <- fluidPage(
   navbarPage("ICP-MS Data Explorer",
              tabPanel("Calibration overview",
@@ -148,13 +165,18 @@ ui <- fluidPage(
                       sidebarPanel(
                         h2("Create plot"),
                         selectizeInput("sample_plot", "Select samples", choices = NULL, multiple = TRUE),
+                        selectizeInput("plot_type", "Plot type", choices = c("Concentration in ppb", "Concentration in uM")),
+                        numericInput("multiply_concentration", "Multiplicator for concentration (to change the unit)", value = 1),
                         textInput("plot_title", "Plot title", value = "Plot title"),
                         textInput("x_axis", "X-Axis", value = "Sample"),
-                        textInput("y_axis", "Y-Axis", value = "Concentration [ppb]")
+                        textInput("y_axis", "Y-Axis", value = "Concentration"),
+                        numericInput("plot_height", "Plot height", value = 600),
+                        numericInput("plot_width", "Plot width", value = 1000),
+                        downloadButton("download_plot", "Download Plot")
                       ),
                       mainPanel(
                         width = 7,
-                        plotOutput("result_plot", height = 600)
+                        uiOutput("plot.ui")
                       )
              ),
   )
@@ -760,9 +782,14 @@ server <- function(input, output, session) {
         filter(sample_name %in% sample_properties_df_prepared$sample_name) %>% 
         select(sample_name, metal, metal_mode, concentration_ppb, rsd) %>% 
         left_join(sample_properties_df_prepared, by = "sample_name") %>% 
-        mutate(undiluted_concentration = ifelse(is.na(weight), 
+        mutate(undiluted_concentration_ppb = ifelse(is.na(weight), 
                                                 concentration_ppb * dilution_factor,
-                                                (concentration_ppb * dilution_factor) / weight))
+                                                (concentration_ppb * dilution_factor) / weight)) %>% 
+        left_join(metal_mw, by = "metal") %>% 
+        mutate(undiluted_concentration_uM = ifelse(is.na(weight), 
+                                                   round(undiluted_concentration_ppb / mw, digits = 5),
+                                                   NA)) %>% 
+        select(-mw)
     }
   })
   
@@ -800,16 +827,19 @@ server <- function(input, output, session) {
   })
   
   # Plot result
-  output$result_plot <- renderPlot({
+  create_plot <- reactive({
     if(is.null(calculate_result()) | is.null(input$sample_plot)){
       return(NULL)
     } else {
       calculate_result() %>% 
         filter(sample_name %in% input$sample_plot) %>% 
-        mutate(sd = rsd * undiluted_concentration / 100) %>% 
-        ggplot(aes(sample_name, undiluted_concentration))+
+        mutate(concentration = ifelse(rep(input$plot_type == "Concentration in ppb", n()),
+                                      undiluted_concentration_ppb * input$multiply_concentration,
+                                      undiluted_concentration_uM * input$multiply_concentration)) %>%
+        mutate(sd = rsd * concentration / 100) %>% 
+        ggplot(aes(sample_name, concentration))+
         geom_col(fill = protti_colours[1])+
-        geom_errorbar(aes(ymin = undiluted_concentration-sd, ymax=undiluted_concentration+sd), 
+        geom_errorbar(aes(ymin = concentration-sd, ymax=concentration+sd), 
                       width = 0.2, 
                       size = 1)+
         labs(title = input$plot_title, x = input$x_axis, y = input$y_axis) +
@@ -828,6 +858,26 @@ server <- function(input, output, session) {
         )
     }
   })
+  
+  output$result_plot <- renderPlot({
+    create_plot()
+  },
+  res = 72)
+  
+  # Update plot height
+  output$plot.ui <- renderUI({
+    plotOutput("result_plot", height = input$plot_height, width = input$plot_width)
+  })
+  
+  # Plot download
+  output$download_plot <- downloadHandler(
+    filename = function() {
+      paste0(input$plot_title, Sys.time(), ".png")
+    },
+    content = function(file){
+      ggsave(file, plot = create_plot(), device = "png", height = input$plot_height * 4, width = input$plot_width * 4, units = "px")
+    }
+  )
 }
 
 # Run the application 
