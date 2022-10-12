@@ -833,6 +833,7 @@ server <- function(input, output, session) {
     } else {
       calculate_result() %>% 
         filter(sample_name %in% input$sample_plot) %>% 
+        mutate(sample_name = fct_relevel(as.factor(sample_name), input$sample_plot)) %>% 
         mutate(concentration = ifelse(rep(input$plot_type == "Concentration in ppb", n()),
                                       undiluted_concentration_ppb * input$multiply_concentration,
                                       undiluted_concentration_uM * input$multiply_concentration)) %>%
