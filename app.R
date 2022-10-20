@@ -213,7 +213,8 @@ server <- function(input, output, session) {
                                      sample_name = c())
   sample_names_expected_df <- NULL
   sample_expected_df <- data.frame(metal = c(),
-                                   expected = c(),
+                                   expected_ppb = c(),
+                                   expected_uM = c(),
                                    sample_name = c())
 
   # Update parameter file if uploaded
@@ -325,7 +326,7 @@ server <- function(input, output, session) {
                                      TRUE ~ parameter))
     } else {
       sample_expected_parameters <- data.frame(parameter = c('expected_sample', 'expected_metal', 'expected_ppb', 'expected_uM'),
-                                             value = c("", "", ""))
+                                             value = c("", "", "", ""))
     }
     
     
