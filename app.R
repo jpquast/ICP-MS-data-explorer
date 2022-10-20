@@ -145,6 +145,7 @@ ui <- fluidPage(
              tabPanel("Analyse experiment",
                       sidebarPanel(
                         h2("Specify sample properties"),
+                        helpText("Once sample properties have been specified they appear in the results table."),
                         selectizeInput("sample", "Select samples", choices = NULL, multiple = TRUE),
                         numericInput("dilution_factor", "Specify dilution factor", value = NULL),
                         numericInput("weight", "Specify sample weight if applicable", value = NULL),
@@ -153,6 +154,19 @@ ui <- fluidPage(
                         br(),
                         br(),
                         verbatimTextOutput("sample_properties"),
+                        br(),
+                        h2("Specify expected values"),
+                        helpText("For each metal and sample combination specify expected values. If you don't know 
+                                 what to expect just don't specify anything."),
+                        selectizeInput("metal_expected", "Select metal", choices = NULL),
+                        selectizeInput("sample_expected", "Select samples", choices = NULL, multiple = TRUE),
+                        numericInput("value_expected", "Specify the expected value", value = NULL),
+                        selectizeInput("unit_expected", "Unit", choices = c("ppb", "uM")),
+                        actionButton("add_sample_expected", "Add", icon = icon("plus")),
+                        actionButton("reset_sample_expected", "Reset", icon = icon("trash-can")),
+                        br(),
+                        br(),
+                        verbatimTextOutput("sample_expected_output"),
                         br(),
                         downloadButton("download_result", label = "Download Results")
                       ),
@@ -170,6 +184,12 @@ ui <- fluidPage(
                         textInput("plot_title", "Plot title", value = "Plot title"),
                         textInput("x_axis", "X-Axis", value = "Sample"),
                         textInput("y_axis", "Y-Axis", value = "Concentration"),
+                        selectizeInput(
+                          'colour', label = "Colour", selected = protti_colours[1:2], choices = protti_colours, multiple = TRUE,
+                          options = list(create = TRUE)
+                        ),
+                        helpText("You can also add your own colour by just pasting a colour name or hex code."),
+                        checkboxInput("plot_expected", "Plot expected values", FALSE),
                         numericInput("plot_height", "Plot height", value = 600),
                         numericInput("plot_width", "Plot width", value = 1000),
                         downloadButton("download_plot", "Download Plot")
@@ -191,6 +211,10 @@ server <- function(input, output, session) {
   sample_properties_df <- data.frame(dilution_factor = c(),
                                      weight = c(),
                                      sample_name = c())
+  sample_names_expected_df <- NULL
+  sample_expected_df <- data.frame(metal = c(),
+                                   expected = c(),
+                                   sample_name = c())
 
   # Update parameter file if uploaded
   observeEvent(input$parameters_input, {
@@ -230,6 +254,36 @@ server <- function(input, output, session) {
     sample_names <<- sample_names[!sample_names %in% unlist(str_split(sample_properties_df$sample_name, pattern = ","))]
     
     updateSelectizeInput(session, "sample", choices = sample_names, server = TRUE) 
+    
+    # expected concentrations
+    sample_expected_df <<- parameters %>% 
+      filter(parameter %in% c("expected_ppb", "expected_uM", "expected_sample", "expected_metal")) %>% 
+      mutate(parameter = case_when(parameter == "expected_sample" ~ "sample_name",
+                                   parameter == "expected_metal" ~ "metal",
+                                   TRUE ~ parameter)) %>% 
+      pivot_wider(names_from = parameter, values_from = value) %>% 
+      mutate(across(everything(), ~str_split(.x, pattern = "\\| "))) %>% 
+      unnest(c(expected_ppb, expected_uM, sample_name, metal)) %>% 
+      mutate(expected_ppb = as.numeric(expected_ppb),
+             expected_uM = as.numeric(expected_uM))
+    
+    exclude_samples <- sample_expected_df %>% 
+      mutate(sample_name = str_split(sample_name, pattern = ",")) %>% 
+      unnest(sample_name)
+    
+    sample_names_expected_df <<- sample_names_expected_df %>% 
+      left_join(exclude_samples, by = c("sample_name", "metal")) %>% 
+      filter(!(!is.na(expected_ppb) | !is.na(expected_uM)))
+    
+    if (input$metal_expected != ""){
+      sample_names_subset <- sample_names_expected_df %>% 
+        filter(metal == input$metal_expected) %>% 
+        pull(sample_name)
+    } else {
+      sample_names_subset <- NULL
+    }
+    
+    updateSelectizeInput(session, "sample_expected", choices = sample_names_subset, server = TRUE)
   })
   
   # Generate parameters file reactively once it is downloaded
@@ -243,15 +297,37 @@ server <- function(input, output, session) {
                   }), 
       collapse = "| ")
     
-    sample_result_parameters <- sample_properties_df %>% 
-      mutate(across(everything(), ~ as.character((.x)))) %>% 
-      pivot_longer(cols = c(dilution_factor, weight, sample_name), names_to = "parameter", values_to = "value") %>% 
-      group_by(parameter) %>% 
-      mutate(value = paste0(value, collapse = "| ")) %>% 
-      ungroup() %>% 
-      distinct() %>% 
-      mutate(parameter = case_when(parameter == "sample_name" ~ "dilution_factor_samples",
-                                   TRUE ~ parameter))
+    if (nrow(sample_properties_df) != 0){
+      sample_result_parameters <- sample_properties_df %>% 
+        mutate(across(everything(), ~ as.character((.x)))) %>% 
+        pivot_longer(cols = c(dilution_factor, weight, sample_name), names_to = "parameter", values_to = "value") %>% 
+        group_by(parameter) %>% 
+        mutate(value = paste0(value, collapse = "| ")) %>% 
+        ungroup() %>% 
+        distinct() %>% 
+        mutate(parameter = case_when(parameter == "sample_name" ~ "dilution_factor_samples",
+                                     TRUE ~ parameter))
+    } else {
+      sample_result_parameters <- data.frame(parameter = c('dilution_factor', 'weight', 'dilution_factor_samples'),
+                                             value = c("", "", ""))
+    }
+    
+    if (nrow(sample_expected_df) != 0){
+      sample_expected_parameters <- sample_expected_df %>% 
+        mutate(across(everything(), ~ as.character((.x)))) %>% 
+        pivot_longer(cols = c(expected_ppb, expected_uM, metal, sample_name), names_to = "parameter", values_to = "value") %>% 
+        group_by(parameter) %>% 
+        mutate(value = paste0(value, collapse = "| ")) %>% 
+        ungroup() %>% 
+        distinct() %>% 
+        mutate(parameter = case_when(parameter == "sample_name" ~ "expected_sample",
+                                     parameter == "metal" ~ "expected_metal",
+                                     TRUE ~ parameter))
+    } else {
+      sample_expected_parameters <- data.frame(parameter = c('expected_sample', 'expected_metal', 'expected_ppb', 'expected_uM'),
+                                             value = c("", "", ""))
+    }
+    
     
     parameters <<- parameters %>% 
       mutate(value = ifelse(parameter == "best_metal_modes", best_metal_mode_string, value),
@@ -259,7 +335,8 @@ server <- function(input, output, session) {
              value = ifelse(parameter == "file_name", input$raw_data$name, value)
       ) %>% 
       filter(!parameter %in% c("dilution_factor", "dilution_factor_samples", "weight")) %>% 
-      bind_rows(sample_result_parameters)
+      bind_rows(sample_result_parameters) %>% 
+      bind_rows(sample_expected_parameters)
   })
   
   # Download parameters
@@ -725,7 +802,7 @@ server <- function(input, output, session) {
     }
       
   })
-  
+  ##### Sample properties
   # update sample selection
   observe({
     sample_names <<- unique(clean_samples()$sample_name)
@@ -764,10 +841,89 @@ server <- function(input, output, session) {
     print(str(sample_properties_df))
   })
   
+  #### Specify expected values
+  # update metal selection
+  observe({
+    updateSelectizeInput(session, "metal_expected", choices = unique(clean_samples()$metal), server = TRUE)
+  })
+  
+  # update sample selection
+  observe({
+    if (!is.null(clean_samples()) & input$metal_expected == ""){
+      sample_names_expected_df <<- clean_samples() %>% 
+        distinct(metal, sample_name)
+    }
+    
+    if (input$metal_expected != ""){
+      sample_names_subset <- sample_names_expected_df %>% 
+        filter(metal == input$metal_expected) %>% 
+        pull(sample_name)
+    } else {
+      sample_names_subset <- NULL
+    }
+    
+    updateSelectizeInput(session, "sample_expected", choices = sample_names_subset, server = TRUE)
+  })
+  
+  # Add samples to expected dataframe
+  observeEvent(input$add_sample_expected, {
+    new_entry <- data.frame(metal = input$metal_expected,
+                            expected_ppb = ifelse(input$value_expected == 0 | input$unit_expected == "uM", NA, input$value_expected),
+                            expected_uM = ifelse(input$value_expected == 0 | input$unit_expected == "ppb", NA, input$value_expected),
+                            sample_name = paste0(input$sample_expected, collapse = ","))
+
+    sample_expected_df <<- sample_expected_df %>% 
+      bind_rows(new_entry)
+    
+    sample_names_expected_df <<- sample_names_expected_df %>% 
+      filter(!(metal == input$metal_expected & sample_name %in% input$sample_expected))
+    
+    if (input$metal_expected != ""){
+      sample_names_subset <- sample_names_expected_df %>% 
+        filter(metal == input$metal_expected) %>% 
+        pull(sample_name)
+    } else {
+      sample_names_subset <- NULL
+    }
+
+    updateSelectizeInput(session, "sample_expected", choices = sample_names_subset, server = TRUE)
+  })
+  
+  # Reset sample expected dataframe
+  observeEvent(input$reset_sample_expected, {
+    sample_expected_df <<- data.frame(metal = c(),
+                                        expected_ppb = c(),
+                                        expected_uM = c(),
+                                        sample_name = c())
+    
+    sample_names_expected_df <<- clean_samples() %>% 
+      distinct(metal, sample_name)
+    
+    if (input$metal_expected != ""){
+      sample_names_subset <- sample_names_expected_df %>% 
+        filter(metal == input$metal_expected) %>% 
+        pull(sample_name)
+    } else {
+      sample_names_subset <- NULL
+    }
+    
+    updateSelectizeInput(session, "sample_expected", choices = sample_names_subset, server = TRUE)
+  })
+  
+  # return dataframe
+  output$sample_expected_output <- renderPrint({
+    input$add_sample_expected
+    input$reset_sample_expected
+    input$parameters_input
+    print(str(sample_expected_df))
+  })
+  
   # create result table 
   calculate_result <- reactive({
     input$add_sample_properties
     input$reset_sample_properties
+    input$add_sample_expected
+    input$reset_sample_expected
     input$parameters_input
     if(is.null(clean_samples()) | nrow(sample_properties_df) == 0){
       return(NULL)
@@ -777,15 +933,40 @@ server <- function(input, output, session) {
         mutate(sample_name = str_split(sample_name, pattern = ",")) %>% 
         unnest(sample_name)
       
+      if (nrow(sample_expected_df) != 0){
+        sample_expected_df_prepared <- sample_expected_df %>% 
+          mutate(sample_name = str_split(sample_name, pattern = ",")) %>% 
+          unnest(sample_name)
+      } else {
+        sample_expected_df_prepared <- sample_expected_df %>% 
+          mutate(sample_name = "",
+                 metal = "",
+                 expected_ppb = "",
+                 expected_uM = "")
+      }
+      
       clean_samples() %>% 
         filter(metal_mode %in% unlist(list_best_metal_modes)) %>%  # select only the chosen metal modes
         filter(sample_name %in% sample_properties_df_prepared$sample_name) %>% 
         select(sample_name, metal, metal_mode, concentration_ppb, rsd) %>% 
         left_join(sample_properties_df_prepared, by = "sample_name") %>% 
+        left_join(sample_expected_df_prepared, by = c("sample_name", "metal")) %>% 
         mutate(undiluted_concentration_ppb = ifelse(is.na(weight), 
-                                                concentration_ppb * dilution_factor,
-                                                (concentration_ppb * dilution_factor) / weight)) %>% 
+                                                    concentration_ppb * dilution_factor,
+                                                    (concentration_ppb * dilution_factor) / weight)) %>% 
         left_join(metal_mw, by = "metal") %>% 
+        mutate(expected_ppb = ifelse(is.na(expected_ppb) & is.na(expected_uM), 
+                                     NA,
+                                     ifelse(is.na(expected_ppb),
+                                            round(as.numeric(expected_uM) * mw, digits = 5),
+                                            expected_ppb)
+                                     )) %>%
+        mutate(expected_uM = ifelse(is.na(expected_ppb) & is.na(expected_uM), 
+                                    NA,
+                                    ifelse(is.na(expected_uM),
+                                           round(as.numeric(expected_ppb) / mw, digits = 5),
+                                           expected_uM)
+                                    )) %>%
         mutate(undiluted_concentration_uM = ifelse(is.na(weight), 
                                                    round(undiluted_concentration_ppb / mw, digits = 5),
                                                    NA)) %>% 
@@ -796,7 +977,9 @@ server <- function(input, output, session) {
   # return table with sample concentrations
   output$result <- DT::renderDataTable({
     input$add_sample_properties
+    input$add_sample_expected
     input$reset_sample_properties
+    input$reset_sample_expected
     input$parameters_input
     if(is.null(clean_samples()) | nrow(sample_properties_df) == 0){
       return(NULL)
@@ -828,36 +1011,80 @@ server <- function(input, output, session) {
   
   # Plot result
   create_plot <- reactive({
-    if(is.null(calculate_result()) | is.null(input$sample_plot)){
+    if(is.null(calculate_result()) | is.null(input$sample_plot) | is.null(input$colour)){
       return(NULL)
     } else {
-      calculate_result() %>% 
-        filter(sample_name %in% input$sample_plot) %>% 
-        mutate(sample_name = fct_relevel(as.factor(sample_name), input$sample_plot)) %>% 
-        mutate(concentration = ifelse(rep(input$plot_type == "Concentration in ppb", n()),
-                                      undiluted_concentration_ppb * input$multiply_concentration,
-                                      undiluted_concentration_uM * input$multiply_concentration)) %>%
-        mutate(sd = rsd * concentration / 100) %>% 
-        ggplot(aes(sample_name, concentration))+
-        geom_col(fill = protti_colours[1])+
-        geom_errorbar(aes(ymin = concentration-sd, ymax=concentration+sd), 
-                      width = 0.2, 
-                      size = 1)+
-        labs(title = input$plot_title, x = input$x_axis, y = input$y_axis) +
-        facet_wrap(~metal_mode, ncol = 4, scale = "free")+
-        theme_bw() +
-        theme(plot.title = ggplot2::element_text(size = 20),
-              axis.title.x = ggplot2::element_text(size = 15),
-              axis.text.y = ggplot2::element_text(size = 15),
-              axis.text.x = ggplot2::element_text(size = 12, angle = 75, hjust = 1),
-              axis.title.y = ggplot2::element_text(size = 15),
-              legend.title = ggplot2::element_text(size = 15),
-              legend.text = ggplot2::element_text(size = 15),
-              strip.text.x = ggplot2::element_text(size = 15),
-              strip.text = ggplot2::element_text(size = 15),
-              strip.background = element_blank()
-        )
+      
+      if (input$plot_expected == FALSE){
+        plot_output <- calculate_result() %>% 
+          filter(sample_name %in% input$sample_plot) %>% 
+          mutate(sample_name = fct_relevel(as.factor(sample_name), input$sample_plot)) %>% 
+          mutate(concentration = ifelse(rep(input$plot_type == "Concentration in ppb", n()),
+                                        undiluted_concentration_ppb * input$multiply_concentration,
+                                        undiluted_concentration_uM * input$multiply_concentration)) %>%
+          mutate(sd = rsd * concentration / 100) %>% 
+          ggplot(aes(sample_name, concentration))+
+          geom_col(fill = input$colour[1])+
+          geom_errorbar(aes(ymin = concentration-sd, ymax=concentration+sd), 
+                        width = 0.2, 
+                        size = 1)+
+          labs(title = input$plot_title, x = input$x_axis, y = input$y_axis) +
+          facet_wrap(~metal_mode, ncol = 4, scale = "free")+
+          scale_fill_manual(values = input$colour) +
+          theme_bw() +
+          theme(plot.title = ggplot2::element_text(size = 20),
+                axis.title.x = ggplot2::element_text(size = 15),
+                axis.text.y = ggplot2::element_text(size = 15),
+                axis.text.x = ggplot2::element_text(size = 12, angle = 75, hjust = 1),
+                axis.title.y = ggplot2::element_text(size = 15),
+                legend.title = ggplot2::element_text(size = 15),
+                legend.text = ggplot2::element_text(size = 15),
+                strip.text.x = ggplot2::element_text(size = 15),
+                strip.text = ggplot2::element_text(size = 15),
+                strip.background = element_blank()
+          )
+      } 
+      if (input$plot_expected == TRUE) {
+        plot_output <- calculate_result() %>% 
+          filter(sample_name %in% input$sample_plot) %>% 
+          mutate(sample_name = fct_relevel(as.factor(sample_name), input$sample_plot)) %>% 
+          mutate(concentration = ifelse(rep(input$plot_type == "Concentration in ppb", n()),
+                                        undiluted_concentration_ppb * input$multiply_concentration,
+                                        undiluted_concentration_uM * input$multiply_concentration)) %>%
+          mutate(concentration_expected = ifelse(rep(input$plot_type == "Concentration in ppb", n()),
+                                                 expected_ppb * input$multiply_concentration,
+                                                 expected_uM * input$multiply_concentration)) %>% 
+          pivot_longer(c(concentration_expected, concentration), names_to = "Category", values_to = "concentration") %>% 
+          mutate(rsd = ifelse(Category == "concentration_expected", NA, rsd)) %>% 
+          mutate(Category = ifelse(Category == "concentration_expected", "Expected concentration", "Measured concentration")) %>% 
+          mutate(sd = rsd * concentration / 100) %>% 
+          ggplot(aes(x = sample_name, y = concentration, fill = Category))+
+          geom_bar(stat="identity", 
+                   color="black", 
+                   position=position_dodge(),
+                   na.rm = TRUE) +
+          geom_errorbar(aes(ymin = concentration-sd, ymax=concentration+sd), 
+                        width = 0.2, 
+                        size = 1,
+                        position = position_dodge(0.9)) +
+          labs(title = input$plot_title, x = input$x_axis, y = input$y_axis) +
+          facet_wrap(~metal_mode, ncol = 4, scale = "free")+
+          scale_fill_manual(values = input$colour) +
+          theme_bw() +
+          theme(plot.title = ggplot2::element_text(size = 20),
+                axis.title.x = ggplot2::element_text(size = 15),
+                axis.text.y = ggplot2::element_text(size = 15),
+                axis.text.x = ggplot2::element_text(size = 12, angle = 75, hjust = 1),
+                axis.title.y = ggplot2::element_text(size = 15),
+                legend.title = ggplot2::element_text(size = 15),
+                legend.text = ggplot2::element_text(size = 15),
+                strip.text.x = ggplot2::element_text(size = 15),
+                strip.text = ggplot2::element_text(size = 15),
+                strip.background = element_blank()
+          )
+      }
     }
+    plot_output
   })
   
   output$result_plot <- renderPlot({
