@@ -10,6 +10,7 @@ library(protti)
 library(formattable)
 library(forcats)
 library(DT)
+library(shinyWidgets)
 
 parameters <- data.frame(
   parameter = c("file_name", 
@@ -65,6 +66,7 @@ metal_mw <- data.frame(metal = c("Ca",
 
 ui <- fluidPage(
   navbarPage("ICP-MS Data Explorer",
+             id = "tabs",
              tabPanel("Calibration overview",
                       sidebarPanel(
                         fileInput("raw_data",
@@ -179,11 +181,13 @@ ui <- fluidPage(
                       sidebarPanel(
                         h2("Create plot"),
                         selectizeInput("sample_plot", "Select samples", choices = NULL, multiple = TRUE),
-                        selectizeInput("plot_type", "Plot type", choices = c("Concentration in ppb", "Concentration in uM")),
+                        radioGroupButtons("plot_type", "Concentration", 
+                                         choiceNames = list("ppb", "uM"),
+                                         choiceValues = list("ppb", "uM")),
                         numericInput("multiply_concentration", "Multiplicator for concentration (to change the unit)", value = 1),
                         textInput("plot_title", "Plot title", value = "Plot title"),
                         textInput("x_axis", "X-Axis", value = "Sample"),
-                        textInput("y_axis", "Y-Axis", value = "Concentration"),
+                        textInput("y_axis", "Y-Axis", value = "Concentration [ppb]"),
                         selectizeInput(
                           'colour', label = "Colour", selected = protti_colours[1:2], choices = protti_colours, multiple = TRUE,
                           options = list(create = TRUE)
@@ -196,7 +200,12 @@ ui <- fluidPage(
                       ),
                       mainPanel(
                         width = 7,
-                        uiOutput("plot.ui")
+                        uiOutput("plot.ui"),
+                        br(),
+                        br(),
+                        h3("Rename samples"),
+                        DTOutput('sample_name_edit'),
+                        br()
                       )
              ),
   )
@@ -216,6 +225,7 @@ server <- function(input, output, session) {
                                    expected_ppb = c(),
                                    expected_uM = c(),
                                    sample_name = c())
+  sample_names_table <- NULL
 
   # Update parameter file if uploaded
   observeEvent(input$parameters_input, {
@@ -249,8 +259,8 @@ server <- function(input, output, session) {
       pivot_wider(names_from = parameter, values_from = value) %>% 
       mutate(across(everything(), ~str_split(.x, pattern = "\\| "))) %>% 
       unnest(c(dilution_factor, weight, sample_name)) %>% 
-      mutate(dilution_factor = as.numeric(dilution_factor),
-             weight = as.numeric(weight))
+      mutate(dilution_factor = suppressWarnings(as.numeric(dilution_factor)),
+             weight = suppressWarnings(as.numeric(weight)))
     
     sample_names <<- sample_names[!sample_names %in% unlist(str_split(sample_properties_df$sample_name, pattern = ","))]
     
@@ -265,16 +275,17 @@ server <- function(input, output, session) {
       pivot_wider(names_from = parameter, values_from = value) %>% 
       mutate(across(everything(), ~str_split(.x, pattern = "\\| "))) %>% 
       unnest(c(expected_ppb, expected_uM, sample_name, metal)) %>% 
-      mutate(expected_ppb = as.numeric(expected_ppb),
-             expected_uM = as.numeric(expected_uM))
+      mutate(expected_ppb = suppressWarnings(as.numeric(expected_ppb)),
+             expected_uM = suppressWarnings(as.numeric(expected_uM)))
     
     exclude_samples <- sample_expected_df %>% 
       mutate(sample_name = str_split(sample_name, pattern = ",")) %>% 
       unnest(sample_name)
-    
+
     sample_names_expected_df <<- sample_names_expected_df %>% 
       left_join(exclude_samples, by = c("sample_name", "metal")) %>% 
-      filter(!(!is.na(expected_ppb) | !is.na(expected_uM)))
+      filter(!(!is.na(expected_ppb) | !is.na(expected_uM))) %>% 
+      distinct(sample_name, metal)
     
     if (input$metal_expected != ""){
       sample_names_subset <- sample_names_expected_df %>% 
@@ -946,7 +957,7 @@ server <- function(input, output, session) {
                  expected_uM = "")
       }
       
-      clean_samples() %>% 
+      result_table <- clean_samples() %>% 
         filter(metal_mode %in% unlist(list_best_metal_modes)) %>%  # select only the chosen metal modes
         filter(sample_name %in% sample_properties_df_prepared$sample_name) %>% 
         select(sample_name, metal, metal_mode, concentration_ppb, rsd) %>% 
@@ -972,6 +983,12 @@ server <- function(input, output, session) {
                                                    round(undiluted_concentration_ppb / mw, digits = 5),
                                                    NA)) %>% 
         select(-mw)
+
+      sample_names_table <<- result_table %>% 
+        distinct(sample_name) %>% 
+        mutate(new_sample_name = sample_name)
+      
+      result_table
     }
   })
   
@@ -1010,6 +1027,21 @@ server <- function(input, output, session) {
     updateSelectizeInput(session, "sample_plot", choices = unique(clean_samples()$sample_name), server = TRUE)
   })
   
+  # Update y-axis name 
+  observe({
+    updateTextInput(session, "y_axis", value = paste0("Concentration [", input$plot_type, "]"))
+  })
+  
+  # edit a cell
+  output$sample_name_edit <- renderDT({
+    input$tabs # update when tabs are switched, otherwise when the plot tab is selected before sample_names_table is created it will never be shown
+    sample_names_table
+    }, selection = 'none', editable = 'cell', server = TRUE, options = list(dom = 't'))
+  
+  observeEvent(input$sample_name_edit_cell_edit, {
+    sample_names_table <<- editData(data = sample_names_table, info = input$sample_name_edit_cell_edit, 'sample_name_edit')
+  })
+  
   # Plot result
   create_plot <- reactive({
     if(is.null(calculate_result()) | is.null(input$sample_plot) | is.null(input$colour)){
@@ -1020,11 +1052,12 @@ server <- function(input, output, session) {
         plot_output <- calculate_result() %>% 
           filter(sample_name %in% input$sample_plot) %>% 
           mutate(sample_name = fct_relevel(as.factor(sample_name), input$sample_plot)) %>% 
-          mutate(concentration = ifelse(rep(input$plot_type == "Concentration in ppb", n()),
+          mutate(concentration = ifelse(rep(input$plot_type == "ppb", n()),
                                         undiluted_concentration_ppb * input$multiply_concentration,
                                         undiluted_concentration_uM * input$multiply_concentration)) %>%
           mutate(sd = rsd * concentration / 100) %>% 
-          ggplot(aes(sample_name, concentration))+
+          left_join(sample_names_table, by = "sample_name") %>% 
+          ggplot(aes(new_sample_name, concentration))+
           geom_col(fill = input$colour[1])+
           geom_errorbar(aes(ymin = concentration-sd, ymax=concentration+sd), 
                         width = 0.2, 
@@ -1049,17 +1082,18 @@ server <- function(input, output, session) {
         plot_output <- calculate_result() %>% 
           filter(sample_name %in% input$sample_plot) %>% 
           mutate(sample_name = fct_relevel(as.factor(sample_name), input$sample_plot)) %>% 
-          mutate(concentration = ifelse(rep(input$plot_type == "Concentration in ppb", n()),
+          mutate(concentration = ifelse(rep(input$plot_type == "ppb", n()),
                                         undiluted_concentration_ppb * input$multiply_concentration,
                                         undiluted_concentration_uM * input$multiply_concentration)) %>%
-          mutate(concentration_expected = ifelse(rep(input$plot_type == "Concentration in ppb", n()),
+          mutate(concentration_expected = ifelse(rep(input$plot_type == "ppb", n()),
                                                  expected_ppb * input$multiply_concentration,
                                                  expected_uM * input$multiply_concentration)) %>% 
           pivot_longer(c(concentration_expected, concentration), names_to = "Category", values_to = "concentration") %>% 
           mutate(rsd = ifelse(Category == "concentration_expected", NA, rsd)) %>% 
           mutate(Category = ifelse(Category == "concentration_expected", "Expected concentration", "Measured concentration")) %>% 
           mutate(sd = rsd * concentration / 100) %>% 
-          ggplot(aes(x = sample_name, y = concentration, fill = Category))+
+          left_join(sample_names_table, by = "sample_name") %>% 
+          ggplot(aes(x = new_sample_name, y = concentration, fill = Category))+
           geom_bar(stat="identity", 
                    color="black", 
                    position=position_dodge(),
