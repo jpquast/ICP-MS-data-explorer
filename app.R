@@ -27,8 +27,15 @@ parameters <- data.frame(
                 "rsd_quality_high",
                 "best_metal_modes",
                 "dilution_factor",
+                "weight",
                 "dilution_factor_samples",
-                "weight"),
+                "expected_ppb",
+                "expected_uM",
+                "expected_metal",
+                "expected_sample",
+                "original_sample_name",
+                "new_sample_name",
+                "condition"),
   value = c("",
             "",
             "0.5",
@@ -41,6 +48,13 @@ parameters <- data.frame(
             "100000000",
             "1",
             "2",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
             "",
             "",
             "",
@@ -63,6 +77,15 @@ metal_mw <- data.frame(metal = c("Ca",
                               58.6934,
                               65.38,
                               54.938))
+
+# create colour choices
+colour_choices <- setNames(protti_colours, paste0("<span style='cursor: pointer;
+    margin: 0 3px 3px 0;
+    padding: 1px 3px;
+    color: #333333;
+    border: 0 solid rgba(0, 0, 0, 0);
+    border-radius: 3px;
+    background:", protti_colours, "';>", protti_colours, "</span>"))
 
 ui <- fluidPage(
   navbarPage("ICP-MS Data Explorer",
@@ -189,11 +212,17 @@ ui <- fluidPage(
                         textInput("x_axis", "X-Axis", value = "Sample"),
                         textInput("y_axis", "Y-Axis", value = "Concentration [ppb]"),
                         selectizeInput(
-                          'colour', label = "Colour", selected = protti_colours[1:2], choices = protti_colours, multiple = TRUE,
-                          options = list(create = TRUE)
+                          'colour', label = "Colour", selected = protti_colours[1:2], choices = colour_choices, multiple = TRUE,
+                          options = list(create = TRUE,
+                                         render = I("
+                          {
+                            item: function(item, escape) { return '<span>' + item.label + '</span>'; },
+                            option: function(item, escape) { return '<div>' + item.label + '</div>'; }
+                          }"))
                         ),
                         helpText("You can also add your own colour by just pasting a colour name or hex code."),
                         checkboxInput("plot_expected", "Plot expected values", FALSE),
+                        checkboxInput("plot_conditions", "Colour by conditions", FALSE),
                         numericInput("plot_height", "Plot height", value = 600),
                         numericInput("plot_width", "Plot width", value = 1000),
                         downloadButton("download_plot", "Download Plot")
@@ -203,7 +232,9 @@ ui <- fluidPage(
                         uiOutput("plot.ui"),
                         br(),
                         br(),
-                        h3("Rename samples"),
+                        h3("Rename samples and add conditions"),
+                        helpText("Doubleclick on a sample name or condition to rename it."),
+                        actionButton("reset_sample_rename", "Reset", icon = icon("trash-can")),
                         DTOutput('sample_name_edit'),
                         br()
                       )
@@ -340,15 +371,32 @@ server <- function(input, output, session) {
                                              value = c("", "", "", ""))
     }
     
+    if(!is.null(sample_names_table)){
+      sample_names_table_parameters <- sample_names_table %>% 
+        pivot_longer(cols = c(sample_name, new_sample_name, Condition), names_to = "parameter", values_to = "value") %>% 
+        group_by(parameter) %>% 
+        mutate(value = paste0(value, collapse = ",")) %>% 
+        ungroup() %>% 
+        distinct() %>% 
+        mutate(parameter = case_when(parameter == "sample_name" ~ "original_sample_name",
+                                     parameter == "Condition" ~ "condition",
+                                     TRUE ~ parameter))
+    } else {
+      sample_names_table_parameters <- data.frame(parameter = c("original_sample_name", "new_sample_name", "condition"),
+                                                  value = c("", "", ""))
+    }
     
     parameters <<- parameters %>% 
       mutate(value = ifelse(parameter == "best_metal_modes", best_metal_mode_string, value),
              value = ifelse(parameter == "date", as.character(Sys.time()), value),
-             value = ifelse(parameter == "file_name", input$raw_data$name, value)
+             value = ifelse(parameter == "file_name" & !is.null(input$raw_data$name), input$raw_data$name, value)
       ) %>% 
-      filter(!parameter %in% c("dilution_factor", "dilution_factor_samples", "weight")) %>% 
+      filter(!parameter %in% c("dilution_factor", "dilution_factor_samples", "weight", 
+                               'expected_sample', 'expected_metal', 'expected_ppb', 'expected_uM',
+                               "original_sample_name", "new_sample_name", "condition")) %>% 
       bind_rows(sample_result_parameters) %>% 
-      bind_rows(sample_expected_parameters)
+      bind_rows(sample_expected_parameters) %>% 
+      bind_rows(sample_names_table_parameters)
   })
   
   # Download parameters
@@ -986,7 +1034,8 @@ server <- function(input, output, session) {
 
       sample_names_table <<- result_table %>% 
         distinct(sample_name) %>% 
-        mutate(new_sample_name = sample_name)
+        mutate(new_sample_name = sample_name,
+               Condition = "")
       
       result_table
     }
@@ -1032,9 +1081,17 @@ server <- function(input, output, session) {
     updateTextInput(session, "y_axis", value = paste0("Concentration [", input$plot_type, "]"))
   })
   
+  # Reset sample names
+  observeEvent(input$reset_sample_rename, {
+    sample_names_table <<- sample_names_table %>% 
+      mutate(new_sample_name = sample_name,
+             Condition = "")
+  })
+  
   # edit a cell
   output$sample_name_edit <- renderDT({
     input$tabs # update when tabs are switched, otherwise when the plot tab is selected before sample_names_table is created it will never be shown
+    input$reset_sample_rename # also update when samples are reset
     sample_names_table
     }, selection = 'none', editable = 'cell', server = TRUE, options = list(dom = 't'))
   
@@ -1044,44 +1101,79 @@ server <- function(input, output, session) {
   
   # Plot result
   create_plot <- reactive({
+    input$sample_name_edit_cell_edit
+    input$reset_sample_rename
     if(is.null(calculate_result()) | is.null(input$sample_plot) | is.null(input$colour)){
       return(NULL)
     } else {
       
       if (input$plot_expected == FALSE){
-        plot_output <- calculate_result() %>% 
-          filter(sample_name %in% input$sample_plot) %>% 
-          mutate(sample_name = fct_relevel(as.factor(sample_name), input$sample_plot)) %>% 
-          mutate(concentration = ifelse(rep(input$plot_type == "ppb", n()),
-                                        undiluted_concentration_ppb * input$multiply_concentration,
-                                        undiluted_concentration_uM * input$multiply_concentration)) %>%
-          mutate(sd = rsd * concentration / 100) %>% 
-          left_join(sample_names_table, by = "sample_name") %>% 
-          ggplot(aes(new_sample_name, concentration))+
-          geom_col(fill = input$colour[1])+
-          geom_errorbar(aes(ymin = concentration-sd, ymax=concentration+sd), 
-                        width = 0.2, 
-                        size = 1)+
-          labs(title = input$plot_title, x = input$x_axis, y = input$y_axis) +
-          facet_wrap(~metal_mode, ncol = 4, scale = "free")+
-          scale_fill_manual(values = input$colour) +
-          theme_bw() +
-          theme(plot.title = ggplot2::element_text(size = 20),
-                axis.title.x = ggplot2::element_text(size = 15),
-                axis.text.y = ggplot2::element_text(size = 15),
-                axis.text.x = ggplot2::element_text(size = 12, angle = 75, hjust = 1),
-                axis.title.y = ggplot2::element_text(size = 15),
-                legend.title = ggplot2::element_text(size = 15),
-                legend.text = ggplot2::element_text(size = 15),
-                strip.text.x = ggplot2::element_text(size = 15),
-                strip.text = ggplot2::element_text(size = 15),
-                strip.background = element_blank()
-          )
+        if(input$plot_conditions == FALSE){
+          plot_output <- calculate_result() %>% 
+            filter(sample_name %in% input$sample_plot) %>% 
+            mutate(concentration = ifelse(rep(input$plot_type == "ppb", n()),
+                                          undiluted_concentration_ppb * input$multiply_concentration,
+                                          undiluted_concentration_uM * input$multiply_concentration)) %>%
+            mutate(sd = rsd * concentration / 100) %>% 
+            left_join(sample_names_table, by = "sample_name") %>% 
+            arrange(factor(sample_name, levels = input$sample_plot)) %>% 
+            mutate(new_sample_name = fct_relevel(as.factor(new_sample_name), unique(new_sample_name))) %>% 
+            ggplot(aes(new_sample_name, concentration))+
+            geom_col(fill = input$colour[1])+
+            geom_errorbar(aes(ymin = concentration-sd, ymax=concentration+sd), 
+                          width = 0.2, 
+                          size = 1)+
+            labs(title = input$plot_title, x = input$x_axis, y = input$y_axis) +
+            facet_wrap(~metal_mode, ncol = 4, scale = "free")+
+            scale_fill_manual(values = input$colour) +
+            theme_bw() +
+            theme(plot.title = ggplot2::element_text(size = 20),
+                  axis.title.x = ggplot2::element_text(size = 15),
+                  axis.text.y = ggplot2::element_text(size = 15),
+                  axis.text.x = ggplot2::element_text(size = 12, angle = 75, hjust = 1),
+                  axis.title.y = ggplot2::element_text(size = 15),
+                  legend.title = ggplot2::element_text(size = 15),
+                  legend.text = ggplot2::element_text(size = 15),
+                  strip.text.x = ggplot2::element_text(size = 15),
+                  strip.text = ggplot2::element_text(size = 15),
+                  strip.background = element_blank()
+            )
+        }
+        if(input$plot_conditions == TRUE){
+          plot_output <- calculate_result() %>% 
+            filter(sample_name %in% input$sample_plot) %>% 
+            mutate(concentration = ifelse(rep(input$plot_type == "ppb", n()),
+                                          undiluted_concentration_ppb * input$multiply_concentration,
+                                          undiluted_concentration_uM * input$multiply_concentration)) %>%
+            mutate(sd = rsd * concentration / 100) %>% 
+            left_join(sample_names_table, by = "sample_name") %>% 
+            arrange(factor(sample_name, levels = input$sample_plot)) %>% 
+            mutate(new_sample_name = fct_relevel(as.factor(new_sample_name), unique(new_sample_name))) %>% 
+            ggplot(aes(new_sample_name, concentration, fill = Condition))+
+            geom_col()+
+            geom_errorbar(aes(ymin = concentration-sd, ymax=concentration+sd), 
+                          width = 0.2, 
+                          size = 1)+
+            labs(title = input$plot_title, x = input$x_axis, y = input$y_axis) +
+            facet_wrap(~metal_mode, ncol = 4, scale = "free")+
+            scale_fill_manual(values = input$colour) +
+            theme_bw() +
+            theme(plot.title = ggplot2::element_text(size = 20),
+                  axis.title.x = ggplot2::element_text(size = 15),
+                  axis.text.y = ggplot2::element_text(size = 15),
+                  axis.text.x = ggplot2::element_text(size = 12, angle = 75, hjust = 1),
+                  axis.title.y = ggplot2::element_text(size = 15),
+                  legend.title = ggplot2::element_text(size = 15),
+                  legend.text = ggplot2::element_text(size = 15),
+                  strip.text.x = ggplot2::element_text(size = 15),
+                  strip.text = ggplot2::element_text(size = 15),
+                  strip.background = element_blank()
+            )
+        }
       } 
       if (input$plot_expected == TRUE) {
         plot_output <- calculate_result() %>% 
           filter(sample_name %in% input$sample_plot) %>% 
-          mutate(sample_name = fct_relevel(as.factor(sample_name), input$sample_plot)) %>% 
           mutate(concentration = ifelse(rep(input$plot_type == "ppb", n()),
                                         undiluted_concentration_ppb * input$multiply_concentration,
                                         undiluted_concentration_uM * input$multiply_concentration)) %>%
@@ -1093,6 +1185,8 @@ server <- function(input, output, session) {
           mutate(Category = ifelse(Category == "concentration_expected", "Expected concentration", "Measured concentration")) %>% 
           mutate(sd = rsd * concentration / 100) %>% 
           left_join(sample_names_table, by = "sample_name") %>% 
+          arrange(factor(sample_name, levels = input$sample_plot)) %>% 
+          mutate(new_sample_name = fct_relevel(as.factor(new_sample_name), unique(new_sample_name))) %>% 
           ggplot(aes(x = new_sample_name, y = concentration, fill = Category))+
           geom_bar(stat="identity", 
                    color="black", 
