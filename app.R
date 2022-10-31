@@ -223,7 +223,8 @@ ui <- fluidPage(
                         checkboxInput("plot_conditions", "Colour by conditions", FALSE),
                         numericInput("plot_height", "Plot height", value = 600),
                         numericInput("plot_width", "Plot width", value = 1000),
-                        downloadButton("download_plot", "Download Plot")
+                        downloadButton("download_plot_png", "Download Plot as .png"),
+                        downloadButton("download_plot_pdf", "Download Plot as .pdf")
                       ),
                       mainPanel(
                         width = 7,
@@ -1251,12 +1252,21 @@ server <- function(input, output, session) {
   })
   
   # Plot download
-  output$download_plot <- downloadHandler(
+  output$download_plot_png <- downloadHandler(
     filename = function() {
       paste0(input$plot_title, Sys.time(), ".png")
     },
     content = function(file){
       ggsave(file, plot = create_plot(), device = "png", height = input$plot_height * 4, width = input$plot_width * 4, units = "px")
+    }
+  )
+  
+  output$download_plot_pdf <- downloadHandler(
+    filename = function() {
+      paste0(input$plot_title, Sys.time(), ".pdf")
+    },
+    content = function(file){
+      ggsave(file, plot = create_plot(), device = "pdf", height = input$plot_height * 4, width = input$plot_width * 4, units = "px")
     }
   )
 }
