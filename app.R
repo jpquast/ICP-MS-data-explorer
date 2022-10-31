@@ -918,6 +918,7 @@ server <- function(input, output, session) {
     input$add_sample_properties
     input$reset_sample_properties
     input$parameters_input
+    Sys.sleep(1)
     print(str(sample_properties_df))
   })
   
@@ -1073,6 +1074,7 @@ server <- function(input, output, session) {
     input$reset_sample_properties
     input$reset_sample_expected
     input$parameters_input
+    Sys.sleep(1)
     if(is.null(clean_samples()) | nrow(sample_properties_df) == 0){
       return(NULL)
     } else {
@@ -1118,7 +1120,7 @@ server <- function(input, output, session) {
     input$tabs # update when tabs are switched, otherwise when the plot tab is selected before sample_names_table is created it will never be shown
     input$reset_sample_rename # also update when samples are reset
     sample_names_table
-    }, selection = 'none', editable = 'cell', server = TRUE, options = list(dom = 't'))
+    }, selection = 'none', editable = 'cell', server = TRUE, options = list(dom = 't', pageLength = -1))
   
   observeEvent(input$sample_name_edit_cell_edit, {
     sample_names_table <<- editData(data = sample_names_table, info = input$sample_name_edit_cell_edit, 'sample_name_edit')
@@ -1260,7 +1262,7 @@ server <- function(input, output, session) {
       ggsave(file, plot = create_plot(), device = "png", height = input$plot_height * 4, width = input$plot_width * 4, units = "px")
     }
   )
-  
+  # Needs to be used in the right browser!
   output$download_plot_pdf <- downloadHandler(
     filename = function() {
       paste0(input$plot_title, Sys.time(), ".pdf")
